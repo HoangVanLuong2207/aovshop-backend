@@ -9,6 +9,9 @@ export const users = sqliteTable('users', {
     password: text('password').notNull(),
     role: text('role', { enum: ['admin', 'user'] }).default('user').notNull(),
     balance: real('balance').default(0).notNull(),
+    emailVerified: integer('email_verified', { mode: 'boolean' }).default(true).notNull(), // default true for existing users
+    verificationToken: text('verification_token'),
+    verificationExpires: text('verification_expires'),
     createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
     updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
 });
