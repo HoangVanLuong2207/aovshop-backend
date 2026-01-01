@@ -1,13 +1,26 @@
 import nodemailer from 'nodemailer';
 
-// Create Gmail SMTP transporter
-const transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD,
-    },
-});
+// Create Brevo SMTP transporter (lazy initialization)
+let transporter: nodemailer.Transporter | null = null;
+
+function getTransporter() {
+    if (!transporter) {
+        console.log('Creating SMTP transporter with:', {
+            user: process.env.BREVO_EMAIL,
+            pass: process.env.BREVO_SMTP_KEY ? '***' : 'MISSING'
+        });
+        transporter = nodemailer.createTransport({
+            host: 'smtp-relay.brevo.com',
+            port: 587,
+            secure: false,
+            auth: {
+                user: process.env.BREVO_EMAIL,
+                pass: process.env.BREVO_SMTP_KEY,
+            },
+        });
+    }
+    return transporter;
+}
 
 interface SendVerificationEmailParams {
     to: string;
@@ -19,7 +32,7 @@ export async function sendVerificationEmail({ to, name, token }: SendVerificatio
     const verifyUrl = `${process.env.FRONTEND_URL}/verify-email/${token}`;
 
     const mailOptions = {
-        from: `"${process.env.SHOP_NAME || 'AOV Shop'}" <${process.env.GMAIL_USER}>`,
+        from: `"${process.env.SHOP_NAME || 'AOV Shop'}" <${process.env.BREVO_SENDER_EMAIL}>`,
         to,
         subject: 'Xác thực email của bạn',
         html: `
@@ -55,7 +68,7 @@ export async function sendVerificationEmail({ to, name, token }: SendVerificatio
     };
 
     try {
-        await transporter.sendMail(mailOptions);
+        await getTransporter().sendMail(mailOptions);
         console.log(`Verification email sent to ${to}`);
         return true;
     } catch (error) {

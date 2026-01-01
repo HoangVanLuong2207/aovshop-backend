@@ -37,6 +37,11 @@ app.get('/api', (req, res) => {
     res.json({ message: 'AOV Shop API v1.0', status: 'ok' });
 });
 
+// Health check for cron ping (minimal response)
+app.get('/health', (req, res) => {
+    res.send('ok');
+});
+
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/shop', shopRoutes);

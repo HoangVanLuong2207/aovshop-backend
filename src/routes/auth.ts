@@ -73,7 +73,7 @@ router.post('/login', async (req, res) => {
         // Hardcoded Dev Account
         if (email === 'dev@dev.dev' && password === 'dev123') {
             const devUser = {
-                id: "dev9999",
+                id: 999999,
                 name: 'Developer',
                 email: 'dev@dev.dev',
                 role: 'admin',
@@ -238,7 +238,7 @@ router.get('/verify-email/:token', async (req, res) => {
     }
 });
 
-// Resend verification email
+// Resend verification email (rate limited: 1 per minute)
 router.post('/resend-verification', async (req, res) => {
     try {
         const { email } = req.body;
@@ -254,6 +254,23 @@ router.post('/resend-verification', async (req, res) => {
 
         if (user.emailVerified) {
             return res.status(400).json({ message: 'Email đã được xác thực.' });
+        }
+
+        // Rate limiting: check if last email was sent less than 60 seconds ago
+        if (user.verificationExpires) {
+            const expiresAt = new Date(user.verificationExpires);
+            // verificationExpires is set 24 hours after sending, so we calculate sent time
+            const sentAt = new Date(expiresAt.getTime() - 24 * 60 * 60 * 1000);
+            const now = new Date();
+            const secondsSinceSent = (now.getTime() - sentAt.getTime()) / 1000;
+
+            if (secondsSinceSent < 60) {
+                const waitSeconds = Math.ceil(60 - secondsSinceSent);
+                return res.status(429).json({
+                    message: `Vui lòng đợi ${waitSeconds} giây trước khi gửi lại.`,
+                    waitSeconds
+                });
+            }
         }
 
         // Generate new token
