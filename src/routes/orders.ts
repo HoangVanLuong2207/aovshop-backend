@@ -62,6 +62,40 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
     }
 });
 
+// Export orders (MUST be before /:id route)
+router.get('/export', authMiddleware, async (req: AuthRequest, res) => {
+    try {
+        const userOrders = await db.query.orders.findMany({
+            where: eq(orders.userId, req.user!.id),
+            with: {
+                items: true,
+                accounts: true,
+            },
+            orderBy: desc(orders.id),
+        });
+
+        // The frontend expects a JSON object with orders array
+        const mappedOrders = (userOrders as any[]).map(order => ({
+            id: order.id,
+            date: order.createdAt,
+            status: order.status,
+            subtotal: order.subtotal,
+            discount: order.discount,
+            total: order.total,
+            items: order.items.map((i: any) => ({
+                name: i.productName,
+                quantity: i.quantity
+            })),
+            accounts: order.accounts?.map((acc: any) => acc.data) || []
+        }));
+
+        res.json({ orders: mappedOrders });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
 // Get single order
 router.get('/:id', authMiddleware, async (req: AuthRequest, res) => {
     try {
@@ -294,38 +328,6 @@ router.post('/apply-promotion', authMiddleware, async (req: AuthRequest, res) =>
             discount,
             promotion: promo,
         });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Lỗi server' });
-    }
-});
-
-// Export orders
-router.get('/export', authMiddleware, async (req: AuthRequest, res) => {
-    try {
-        const userOrders = await db.query.orders.findMany({
-            where: eq(orders.userId, req.user!.id),
-            with: {
-                items: true,
-            },
-            orderBy: desc(orders.id),
-        });
-
-        // The frontend expects a JSON object with orders array
-        const mappedOrders = (userOrders as any[]).map(order => ({
-            id: order.id,
-            date: order.createdAt,
-            status: order.status,
-            subtotal: order.subtotal,
-            discount: order.discount,
-            total: order.total,
-            items: order.items.map((i: any) => ({
-                name: i.productName,
-                quantity: i.quantity
-            }))
-        }));
-
-        res.json({ orders: mappedOrders });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
