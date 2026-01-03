@@ -2,10 +2,47 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { db } from '../db/index.js';
 import { settings, deposits, users, transactions } from '../db/schema.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, lt, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
+
+// Cleanup expired deposits (pending > 2 hours)
+export const cleanupExpiredDeposits = async () => {
+    try {
+        // Calculate timestamp 2 hours ago
+        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+        // Update all pending deposits older than 2 hours to expired
+        const result = await db.update(deposits)
+            .set({
+                status: 'expired',
+                updatedAt: new Date().toISOString()
+            })
+            .where(
+                and(
+                    eq(deposits.status, 'pending'),
+                    lt(deposits.createdAt, twoHoursAgo)
+                )
+            )
+            .returning({ id: deposits.id });
+
+        const count = result.length;
+        if (count > 0) {
+            console.log(`[Cleanup] Marked ${count} expired deposit(s)`);
+        }
+        return count;
+    } catch (error) {
+        console.error('[Cleanup] Error:', error);
+        return 0;
+    }
+};
+
+// Public cleanup endpoint for external cron
+router.get('/cleanup', async (req, res) => {
+    const count = await cleanupExpiredDeposits();
+    res.json({ success: true, expired_count: count });
+});
 
 // Public endpoint - Get shop info (name, logo, banner) - no auth required
 router.get('/shop-info', async (req, res) => {

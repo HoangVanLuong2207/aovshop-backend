@@ -6,7 +6,7 @@ import rateLimit from 'express-rate-limit';
 import authRoutes from './routes/auth.js';
 import shopRoutes from './routes/shop.js';
 import ordersRoutes from './routes/orders.js';
-import depositRoutes from './routes/deposit.js';
+import depositRoutes, { cleanupExpiredDeposits } from './routes/deposit.js';
 import adminRoutes from './routes/admin.js';
 
 import path from 'path';
@@ -81,6 +81,12 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 });
 
 // Start server
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
+
+    // Cleanup expired deposits on startup
+    const expiredCount = await cleanupExpiredDeposits();
+    if (expiredCount > 0) {
+        console.log(`✅ Startup cleanup: ${expiredCount} expired deposit(s) processed`);
+    }
 });

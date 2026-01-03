@@ -642,7 +642,7 @@ router.get('/users/:id', async (req, res) => {
 
 router.put('/users/:id', async (req: AuthRequest, res) => {
     try {
-        const { name, email, role, balance } = req.body;
+        const { name, email, role, addBalance } = req.body;
         const userId = parseInt(req.params.id);
 
         // Don't allow admin to change their own role
@@ -650,11 +650,36 @@ router.put('/users/:id', async (req: AuthRequest, res) => {
             return res.status(400).json({ message: 'Không thể thay đổi role của chính mình' });
         }
 
+        // Get current user for balance calculation
+        const currentUser = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+        });
+
+        if (!currentUser) {
+            return res.status(404).json({ message: 'Không tìm thấy người dùng' });
+        }
+
         const updateData: any = {};
         if (name !== undefined) updateData.name = name;
         if (email !== undefined) updateData.email = email;
         if (role !== undefined) updateData.role = role;
-        if (balance !== undefined) updateData.balance = parseFloat(balance);
+
+        // Add to balance instead of overwriting
+        if (addBalance !== undefined && addBalance !== 0) {
+            const amount = parseFloat(addBalance);
+            updateData.balance = currentUser.balance + amount;
+
+            // Create transaction record for the balance change
+            await db.insert(transactions).values({
+                userId: userId,
+                type: amount > 0 ? 'deposit' : 'purchase',
+                amount: Math.abs(amount),
+                balanceBefore: currentUser.balance,
+                balanceAfter: currentUser.balance + amount,
+                status: 'completed',
+                description: amount > 0 ? 'Admin cộng số dư' : 'Admin trừ số dư',
+            });
+        }
 
         await db.update(users)
             .set(updateData)
