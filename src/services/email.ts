@@ -1,14 +1,30 @@
 // Using Brevo HTTP API instead of SMTP
 // Render free tier blocks SMTP ports (587), so we use HTTP API (port 443)
 
+import { db } from '../db/index.js';
+import { settings } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
+
 interface SendVerificationEmailParams {
     to: string;
     name: string;
     token: string;
 }
 
+// Helper to get shop name from database
+async function getShopName(): Promise<string> {
+    try {
+        const result = await db.select().from(settings).where(eq(settings.key, 'shop_name'));
+        return result[0]?.value || process.env.SHOP_NAME || 'AOV Shop';
+    } catch (error) {
+        console.error('Error fetching shop name:', error);
+        return process.env.SHOP_NAME || 'AOV Shop';
+    }
+}
+
 export async function sendVerificationEmail({ to, name, token }: SendVerificationEmailParams): Promise<boolean> {
     const verifyUrl = `${process.env.FRONTEND_URL}/verify-email/${token}`;
+    const shopName = await getShopName();
 
     const htmlContent = `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -36,7 +52,7 @@ export async function sendVerificationEmail({ to, name, token }: SendVerificatio
             </p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
             <p style="color: #999; font-size: 12px; text-align: center;">
-                © ${new Date().getFullYear()} ${process.env.SHOP_NAME || 'AOV Shop'}. All rights reserved.
+                © ${new Date().getFullYear()} ${shopName}. All rights reserved.
             </p>
         </div>
     `;
@@ -53,7 +69,7 @@ export async function sendVerificationEmail({ to, name, token }: SendVerificatio
             },
             body: JSON.stringify({
                 sender: {
-                    name: process.env.SHOP_NAME || 'AOV Shop',
+                    name: shopName,
                     email: process.env.BREVO_SENDER_EMAIL,
                 },
                 to: [{ email: to, name }],
