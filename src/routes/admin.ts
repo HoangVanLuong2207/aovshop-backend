@@ -2,7 +2,7 @@ import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth
 import { Router } from 'express';
 import { db } from '../db/index.js';
 import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts } from '../db/schema.js';
-import { eq, desc, sql, and, inArray } from 'drizzle-orm';
+import { eq, desc, sql, and, inArray, gte, lte } from 'drizzle-orm';
 
 
 const router = Router();
@@ -174,7 +174,28 @@ router.put('/products/:id', handleProductUpdate);
 
 router.delete('/products/:id', async (req, res) => {
     try {
-        await db.delete(products).where(eq(products.id, parseInt(req.params.id)));
+        const productId = parseInt(req.params.id);
+
+        // Delete available accounts (chưa bán - có thể xóa hoàn toàn)
+        await db.delete(productAccounts).where(
+            and(
+                eq(productAccounts.productId, productId),
+                eq(productAccounts.status, 'available')
+            )
+        );
+
+        // Set productId to null for sold accounts (giữ lại lịch sử)
+        await db.update(productAccounts)
+            .set({ productId: null as any })
+            .where(eq(productAccounts.productId, productId));
+
+        // Set productId to null for order items (giữ lại lịch sử đơn hàng)
+        await db.update(orderItems)
+            .set({ productId: null })
+            .where(eq(orderItems.productId, productId));
+
+        // Now we can safely delete the product
+        await db.delete(products).where(eq(products.id, productId));
         res.json({ message: 'Đã xóa sản phẩm' });
     } catch (error) {
         console.error(error);
@@ -425,6 +446,58 @@ router.get('/orders', async (req, res) => {
     }
 });
 
+// Order statistics endpoint (must be before /:id)
+router.get('/orders/statistics', async (req, res) => {
+    try {
+        const { start_date, end_date } = req.query;
+
+        // Build date filter conditions - dates are stored as ISO strings in SQLite
+        const conditions = [];
+        if (start_date) {
+            conditions.push(gte(orders.createdAt, start_date as string));
+        }
+        if (end_date) {
+            conditions.push(lte(orders.createdAt, end_date as string));
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        // Get total orders count
+        const totalOrdersResult = await db.select({ count: sql`count(*)` })
+            .from(orders)
+            .where(whereClause ? and(whereClause) : undefined);
+
+        // Get completed orders and revenue
+        const completedConditions = whereClause
+            ? and(whereClause, eq(orders.status, 'completed'))
+            : eq(orders.status, 'completed');
+
+        const revenueResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(total), 0)`
+        }).from(orders).where(completedConditions);
+
+        // Get pending orders count
+        const pendingConditions = whereClause
+            ? and(whereClause, eq(orders.status, 'pending'))
+            : eq(orders.status, 'pending');
+
+        const pendingResult = await db.select({ count: sql`count(*)` })
+            .from(orders)
+            .where(pendingConditions);
+
+        res.json({
+            total_orders: Number(totalOrdersResult[0]?.count || 0),
+            completed_orders: Number(revenueResult[0]?.count || 0),
+            pending_orders: Number(pendingResult[0]?.count || 0),
+            total_revenue: Number(revenueResult[0]?.sum || 0),
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
 router.get('/orders/:id', async (req, res) => {
     try {
         const order = await db.query.orders.findFirst({
@@ -464,6 +537,56 @@ router.get('/transactions', async (req, res) => {
             orderBy: desc(transactions.id),
         });
         res.json({ data: result });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Transaction statistics endpoint
+router.get('/transactions/statistics', async (req, res) => {
+    try {
+        // Get total deposits
+        const depositsResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(amount), 0)`
+        }).from(transactions).where(
+            and(
+                eq(transactions.type, 'deposit'),
+                eq(transactions.status, 'completed')
+            )
+        );
+
+        // Get total purchases/spending
+        const purchasesResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(ABS(amount)), 0)`
+        }).from(transactions).where(
+            and(
+                eq(transactions.type, 'purchase'),
+                eq(transactions.status, 'completed')
+            )
+        );
+
+        // Get pending deposits
+        const pendingResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(amount), 0)`
+        }).from(transactions).where(
+            and(
+                eq(transactions.type, 'deposit'),
+                eq(transactions.status, 'pending')
+            )
+        );
+
+        res.json({
+            total_deposits: Number(depositsResult[0]?.sum || 0),
+            total_deposit_count: Number(depositsResult[0]?.count || 0),
+            total_spending: Number(purchasesResult[0]?.sum || 0),
+            total_purchase_count: Number(purchasesResult[0]?.count || 0),
+            pending_deposits: Number(pendingResult[0]?.sum || 0),
+            pending_deposit_count: Number(pendingResult[0]?.count || 0),
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
