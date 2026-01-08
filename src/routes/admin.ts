@@ -2,7 +2,7 @@ import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth
 import { Router } from 'express';
 import { db } from '../db/index.js';
 import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts } from '../db/schema.js';
-import { eq, desc, sql, and, inArray, gte, lte } from 'drizzle-orm';
+import { eq, desc, sql, and, inArray, gte, lte, like } from 'drizzle-orm';
 
 
 const router = Router();
@@ -176,7 +176,7 @@ router.delete('/products/:id', async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
 
-        // Delete available accounts (chưa bán - xóa để giải phóng kho)
+        // Delete available accounts (chưa bán - có thể xóa hoàn toàn)
         await db.delete(productAccounts).where(
             and(
                 eq(productAccounts.productId, productId),
@@ -184,12 +184,19 @@ router.delete('/products/:id', async (req, res) => {
             )
         );
 
-        // Soft delete: Set product to inactive, stock to 0, and remove from category
-        await db.update(products)
-            .set({ active: false, stock: 0, categoryId: null as any })
-            .where(eq(products.id, productId));
+        // Set productId to null for sold accounts (giữ lại lịch sử)
+        await db.update(productAccounts)
+            .set({ productId: null as any })
+            .where(eq(productAccounts.productId, productId));
 
-        res.json({ message: 'Sản phẩm đã được ẩn và tài khoản tồn kho đã bị xóa' });
+        // Set productId to null for order items (giữ lại lịch sử đơn hàng)
+        await db.update(orderItems)
+            .set({ productId: null })
+            .where(eq(orderItems.productId, productId));
+
+        // Now we can safely delete the product
+        await db.delete(products).where(eq(products.id, productId));
+        res.json({ message: 'Đã xóa sản phẩm' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -341,6 +348,50 @@ router.post('/products/:id/accounts/clear', async (req, res) => {
             .where(eq(products.id, productId));
 
         res.json({ message: 'Đã xóa tất cả tài khoản chưa bán', stock: 0 });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+
+// Search account by data
+router.get('/accounts/search', async (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q || typeof q !== 'string') {
+            return res.status(400).json({ message: 'Thiếu từ khóa tìm kiếm' });
+        }
+
+        // Search in productAccounts table
+        const result = await db.query.productAccounts.findFirst({
+            where: like(productAccounts.data, `%${q}%`),
+            with: {
+                product: {
+                    with: {
+                        category: true
+                    }
+                },
+            },
+        });
+
+        if (!result || !result.product) {
+            return res.json({ found: false });
+        }
+
+        res.json({
+            found: true,
+            product: {
+                id: result.product.id,
+                name: result.product.name,
+                category: (result.product as any).category ? {
+                    id: (result.product as any).category.id,
+                    name: (result.product as any).category.name,
+                } : null
+            },
+            status: result.status,
+            accountId: result.id,
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });

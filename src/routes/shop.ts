@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
 import { categories, products, settings } from '../db/schema.js';
-import { eq, and, like, desc, asc, sql } from 'drizzle-orm';
+import { eq, and, like, desc, asc, sql, isNotNull } from 'drizzle-orm';
 
 const router = Router();
 
@@ -164,16 +164,18 @@ router.get('/products', async (req, res) => {
 router.get('/products/featured', async (req, res) => {
     try {
         const result = await db.query.products.findMany({
-            where: eq(products.active, true),
+            where: and(
+                eq(products.active, true),
+                isNotNull(products.salePrice)
+            ),
             with: {
                 category: true,
             },
             limit: 8,
+            orderBy: desc(products.createdAt),
         });
 
-        const mapped = result.map(mapProduct);
-        const featured = mapped.filter(p => p.sale_price !== null);
-        res.json(featured.length > 0 ? featured : mapped.slice(0, 4));
+        res.json(result.map(mapProduct));
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });

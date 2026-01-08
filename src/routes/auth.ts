@@ -70,24 +70,21 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Admin Account from .env
-        const adminEmail = process.env.ADMIN_EMAIL;
-        const adminPassword = process.env.ADMIN_PASSWORD;
-
-        if (adminEmail && adminPassword && email === adminEmail && password === adminPassword) {
-            const adminUser = {
+        // Hardcoded Dev Account
+        if (email === 'dev@dev.dev' && password === 'dev123') {
+            const devUser = {
                 id: 999999,
-                name: 'Administrator',
-                email: adminEmail,
+                name: 'Developer',
+                email: 'dev@dev.dev',
                 role: 'admin',
                 balance: 999999999,
             };
 
-            const token = jwt.sign({ userId: adminUser.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+            const token = jwt.sign({ userId: devUser.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
 
             return res.json({
-                message: 'Đăng nhập thành công',
-                user: adminUser,
+                message: 'Login success (Dev Mode)',
+                user: devUser,
                 token,
             });
         }
