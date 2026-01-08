@@ -1,21 +1,24 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { categories, products, settings } from '../db/schema.js';
+import { categories, products, settings, orders } from '../db/schema.js';
 import { eq, and, like, desc, asc, sql, isNotNull } from 'drizzle-orm';
 
 const router = Router();
 
-// Get public shop info (name, logo, banner)
+// Get public shop info (name, logo, banner, contact)
 router.get('/info', async (req, res) => {
     try {
         const result = await db.select().from(settings).where(
-            sql`${settings.key} IN ('shop_name', 'shop_logo', 'shop_banner')`
+            sql`${settings.key} IN ('shop_name', 'shop_logo', 'shop_banner', 'contact_zalo', 'contact_messenger', 'contact_hotline')`
         );
 
         const info: Record<string, string | null> = {
             shop_name: 'AOV Shop',
             shop_logo: null,
             shop_banner: null,
+            contact_zalo: null,
+            contact_messenger: null,
+            contact_hotline: null,
         };
         result.forEach(s => {
             if (s.value) info[s.key] = s.value;
@@ -24,7 +27,7 @@ router.get('/info', async (req, res) => {
         res.json(info);
     } catch (error) {
         console.error(error);
-        res.json({ shop_name: 'AOV Shop', shop_logo: null, shop_banner: null });
+        res.json({ shop_name: 'AOV Shop', shop_logo: null, shop_banner: null, contact_zalo: null, contact_messenger: null, contact_hotline: null });
     }
 });
 
@@ -216,6 +219,75 @@ router.get('/products/:id', async (req, res) => {
         }
 
         res.json(mapProduct(product));
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Get recent orders for live feed (public, anonymized)
+router.get('/recent-orders', async (req, res) => {
+    try {
+        const recentOrders = await db.query.orders.findMany({
+            where: eq(orders.status, 'completed'),
+            with: {
+                user: true,
+                items: true,
+                accounts: {
+                    with: {
+                        product: true
+                    }
+                }
+            },
+            orderBy: desc(orders.id),
+            limit: 10,
+        });
+
+        // Anonymize user names and format for frontend
+        const feed = recentOrders.map(order => {
+            const userName = order.user?.name || 'Khách hàng';
+            // Anonymize: "Nguyen Van A" -> "Nguyen V***"
+            const parts = userName.split(' ');
+            const anonymized = parts.length > 1
+                ? `${parts[0]} ${parts[parts.length - 1][0]}***`
+                : `${userName[0]}***`;
+
+            // Try to get product info from order items first, then fallback to linked accounts
+            let productName = 'Sản phẩm';
+            let productPrice = 0;
+
+            if (order.items && order.items.length > 0) {
+                productName = order.items[0].productName;
+                productPrice = order.items[0].price;
+            } else if (order.accounts && order.accounts.length > 0 && order.accounts[0].product) {
+                // Fallback for old orders that might not have orderItems but have linked accounts
+                productName = order.accounts[0].product.name;
+                productPrice = order.accounts[0].product.salePrice || order.accounts[0].product.price;
+            }
+
+            // Calculate time ago
+            const createdAt = new Date(order.createdAt || Date.now());
+            const now = new Date();
+            const diffMs = now.getTime() - createdAt.getTime();
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMins / 60);
+
+            let timeAgo = 'vừa xong';
+            if (diffHours > 0) {
+                timeAgo = `${diffHours} giờ trước`;
+            } else if (diffMins > 0) {
+                timeAgo = `${diffMins} phút trước`;
+            }
+
+            return {
+                user: anonymized,
+                product: productName,
+                price: productPrice || order.total,
+                time: timeAgo,
+            };
+        });
+
+        res.json(feed);
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });

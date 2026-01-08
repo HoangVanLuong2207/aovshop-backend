@@ -219,6 +219,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             total,
             promoCode: promo_code || null,
             note: note || null,
+            createdAt: new Date().toISOString(),
         }).returning();
 
         // Create order items, link accounts, and update stock
