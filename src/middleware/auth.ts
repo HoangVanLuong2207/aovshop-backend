@@ -22,11 +22,11 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
         const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
 
-        // Hardcoded Dev Account Check
+        // Admin Account Check (from .env)
         if (decoded.userId === 999999) {
             req.user = {
                 id: 999999,
-                email: 'dev@dev.dev',
+                email: process.env.ADMIN_EMAIL || 'admin@aovshop.com',
                 role: 'admin',
             };
             return next();

@@ -36,6 +36,48 @@ const authLimiter = rateLimit({
     legacyHeaders: false,
 });
 
+// Rate limiting - Deposit: 10 requests per minute (prevent spam deposits)
+const depositLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10,
+    message: { message: 'Too many deposit requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Rate limiting - Orders: 20 requests per minute (prevent order spam)
+const ordersLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 20,
+    message: { message: 'Too many order requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Rate limiting - Admin: 50 requests per minute
+const adminLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 50,
+    message: { message: 'Too many admin requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Rate limiting - Webhook: 30 requests per minute (for payment callbacks)
+const webhookLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 30,
+    message: { message: 'Too many webhook requests.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    // Skip rate limit check for trusted IPs (payment providers)
+    skip: (req) => {
+        const trustedIPs = ['127.0.0.1', '::1']; // Add SePay IPs here if known
+        const clientIP = req.ip || req.socket.remoteAddress || '';
+        return trustedIPs.includes(clientIP);
+    }
+});
+
 // Middleware
 app.use(cors({
     origin: true, // Allow all origins for webhooks from payment providers
@@ -62,12 +104,12 @@ app.get('/health', (req, res) => {
     res.send('ok');
 });
 
-// Routes
-app.use('/api/auth', authLimiter, authRoutes); // Stricter rate limit for auth
-app.use('/api/shop', shopRoutes);
-app.use('/api/orders', ordersRoutes);
-app.use('/api/deposit', depositRoutes);
-app.use('/api/admin', adminRoutes);
+// Routes with specific rate limits
+app.use('/api/auth', authLimiter, authRoutes); // 5 req/min - prevent brute force
+app.use('/api/shop', shopRoutes); // Uses general limit (100 req/min)
+app.use('/api/orders', ordersLimiter, ordersRoutes); // 20 req/min - prevent order spam
+app.use('/api/deposit', depositLimiter, depositRoutes); // 10 req/min - prevent deposit spam
+app.use('/api/admin', adminLimiter, adminRoutes); // 50 req/min
 
 // 404 handler
 app.use((req, res) => {
