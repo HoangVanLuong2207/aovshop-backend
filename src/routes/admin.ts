@@ -176,7 +176,7 @@ router.delete('/products/:id', async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
 
-        // Delete available accounts (chưa bán - có thể xóa hoàn toàn)
+        // Delete available accounts (chưa bán - xóa để giải phóng kho)
         await db.delete(productAccounts).where(
             and(
                 eq(productAccounts.productId, productId),
@@ -184,19 +184,12 @@ router.delete('/products/:id', async (req, res) => {
             )
         );
 
-        // Set productId to null for sold accounts (giữ lại lịch sử)
-        await db.update(productAccounts)
-            .set({ productId: null as any })
-            .where(eq(productAccounts.productId, productId));
+        // Soft delete: Set product to inactive, stock to 0, and remove from category
+        await db.update(products)
+            .set({ active: false, stock: 0, categoryId: null as any })
+            .where(eq(products.id, productId));
 
-        // Set productId to null for order items (giữ lại lịch sử đơn hàng)
-        await db.update(orderItems)
-            .set({ productId: null })
-            .where(eq(orderItems.productId, productId));
-
-        // Now we can safely delete the product
-        await db.delete(products).where(eq(products.id, productId));
-        res.json({ message: 'Đã xóa sản phẩm' });
+        res.json({ message: 'Sản phẩm đã được ẩn và tài khoản tồn kho đã bị xóa' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
