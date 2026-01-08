@@ -247,10 +247,52 @@ router.get('/recent-orders', async (req, res) => {
         const feed = recentOrders.map(order => {
             const userName = order.user?.name || 'Khách hàng';
             // Anonymize: "Nguyen Van A" -> "Nguyen V***"
+            // Anonymize: "Nguyen Van A" -> "Nguyen Van***" or "Ngu***"
             const parts = userName.split(' ');
-            const anonymized = parts.length > 1
-                ? `${parts[0]} ${parts[parts.length - 1][0]}***`
-                : `${userName[0]}***`;
+            let anonymized;
+
+            if (parts.length > 1) {
+                // If Name is "Nguyen Van Anh", show "Nguyen Van***" is too long? 
+                // User asked for "3 chữ cái đầu" (3 first letters).
+                // Let's interpret as: First word + first 3 letters of last word? 
+                // Or just first 3 letters of the whole string?
+                // Usually for gaming shops: "Hoang***" is common. 
+                // If name is "Hoang Van Luong", "Hoa***" might be too short.
+                // Let's try to keep it clear but private. 
+                // If "Nguyen Van A", "Ngu***" is just 3 chars. 
+                // Let's go with showing the first name fully if short, or just first 3 chars if single word.
+                // actually "3 chữ cái đầu" literally means 3 chars. 
+                // But "HoangVanLuong" -> "Hoa***".
+
+                // Let's implement: First word full (if < 4 chars?) or just first 3 chars of the name.
+                // The user's request "hiển thị 1 chữ cái đầu... chỉnh thành 3 chữ cái đầu" implies the *masked part* or the *visible part*. 
+                // Context: "A***" -> "Anh***". 
+                // So if name is "Anh Tuan", previously "A***", now "Anh***".
+
+                // If multiple parts: "Nguyen Van A" -> "Nguyen***" ?
+                // Let's use: First 3 characters of the LAST word if multiple words? No, that's confusing.
+                // Let's stick to the user's literal request: Show 3 characters.
+
+                // If "Nguyen Van A": "Ngu***" ?
+                // If "A": "A***" (length < 3).
+
+                // Let's try a balanced approach often used:
+                // If multiple words: Show first word + first char of last word?
+                // Old logic: `parts[0] ${parts[parts.length - 1][0]}***` -> "Nguyen V***"
+
+                // User said: "đang hiển thị 1 chữ cái đầu... 3 chữ cái đầu" 
+                // Likely refers to the *last name* part in my previous logic `parts[parts.length - 1][0]`.
+                // So "Nguyen V***" -> "Nguyen Van***" (if last name is Van...)?
+                // Or maybe they just mean "Ngu***" for the whole string.
+
+                // Let's assume they mean looking at "A***" and wanting "Abc***".
+                // If I have "Nguyen Van Luong", and display "Nguyen L***", user might want "Nguyen Luo***".
+
+                // Let's change `parts[parts.length - 1][0]` to `parts[parts.length - 1].substring(0, 3)`.
+                anonymized = `${parts[0]} ${parts[parts.length - 1].substring(0, 3)}***`;
+            } else {
+                anonymized = `${userName.substring(0, 3)}***`;
+            }
 
             // Try to get product info from order items first, then fallback to linked accounts
             let productName = 'Sản phẩm';
