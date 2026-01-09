@@ -2,7 +2,6 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
-import helmet from 'helmet';
 
 import authRoutes from './routes/auth.js';
 import shopRoutes from './routes/shop.js';
@@ -80,9 +79,6 @@ const webhookLimiter = rateLimit({
 });
 
 // Middleware
-app.use(helmet({
-    crossOriginResourcePolicy: { policy: "cross-origin" }, // Allow resource loading
-}));
 app.use(cors({
     origin: true, // Allow all origins for webhooks from payment providers
     credentials: true,

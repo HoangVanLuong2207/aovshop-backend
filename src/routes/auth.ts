@@ -70,6 +70,24 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
+        // Hardcoded Dev Account
+        if (email === 'dev@dev.dev' && password === 'dev123') {
+            const devUser = {
+                id: 999999,
+                name: 'Developer',
+                email: 'dev@dev.dev',
+                role: 'admin',
+                balance: 999999999,
+            };
+
+            const token = jwt.sign({ userId: devUser.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+
+            return res.json({
+                message: 'Login success (Dev Mode)',
+                user: devUser,
+                token,
+            });
+        }
 
         const user = await db.query.users.findFirst({
             where: eq(users.email, email),
