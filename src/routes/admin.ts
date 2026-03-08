@@ -826,6 +826,20 @@ router.put('/users/:id', async (req: AuthRequest, res) => {
             return res.status(404).json({ message: 'Không tìm thấy người dùng' });
         }
 
+        // Check if new email is already used by another user
+        if (email !== undefined && email !== currentUser.email) {
+            const existingUser = await db.query.users.findFirst({
+                where: and(
+                    eq(users.email, email),
+                    sql`${users.id} != ${userId}`
+                ),
+            });
+
+            if (existingUser) {
+                return res.status(400).json({ message: 'Email đã được sử dụng' });
+            }
+        }
+
         const updateData: any = {};
         if (name !== undefined) updateData.name = name;
         if (email !== undefined) updateData.email = email;
