@@ -29,7 +29,8 @@ async function getShopName(): Promise<string> {
 }
 
 export async function sendVerificationEmail({ to, name, token }: SendVerificationEmailParams): Promise<boolean> {
-    const verifyUrl = `${process.env.FRONTEND_URL}verify-email/${token}`;
+    const baseUrl = process.env.FRONTEND_URL?.replace(/\/$/, '') || 'http://localhost:5173';
+    const verifyUrl = `${baseUrl}/verify-email/${token}`;
     console.log(`\n--- [TESTING] Verification Link for ${to} ---\n${verifyUrl}\n-------------------------------------------\n`);
     const shopName = await getShopName();
 
@@ -118,7 +119,8 @@ export function getVerificationExpiry(): string {
 }
 
 export async function sendResetPasswordEmail({ to, name, token }: SendResetPasswordEmailParams): Promise<boolean> {
-    const resetUrl = `${process.env.FRONTEND_URL}reset-password?token=${token}`;
+    const baseUrl = process.env.FRONTEND_URL?.replace(/\/$/, '') || 'http://localhost:5173';
+    const resetUrl = `${baseUrl}/reset-password?token=${token}`;
     console.log(`\n--- [TESTING] Reset Password Link for ${to} ---\n${resetUrl}\n---------------------------------------------\n`);
     const shopName = await getShopName();
 
