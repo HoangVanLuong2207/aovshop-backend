@@ -5,7 +5,7 @@ import { db } from '../db/index.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
-import { sendVerificationEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
+import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
 
 const router = Router();
 
@@ -30,7 +30,7 @@ router.post('/register', async (req, res) => {
         const verificationToken = generateVerificationToken();
         const verificationExpires = getVerificationExpiry();
 
-        // Create user (NOT verified)
+        // Create user (Unverified by default, but login allowed)
         const result = await db.insert(users).values({
             name,
             email,
@@ -55,9 +55,13 @@ router.post('/register', async (req, res) => {
             console.error('Failed to send verification email');
         }
 
+        // Generate token for immediate login
+        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+
         res.json({
-            message: 'Đăng ký thành công! Vui lòng kiểm tra email để xác thực tài khoản.',
-            requireVerification: true,
+            message: 'Đăng ký thành công! Bạn có thể sử dụng shop ngay, nhưng nên xác thực email để bảo mật tài khoản.',
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: user.balance, emailVerified: user.emailVerified },
+            token,
         });
     } catch (error) {
         console.error(error);
@@ -102,7 +106,8 @@ router.post('/login', async (req, res) => {
             return res.status(401).json({ message: 'Email hoặc mật khẩu không đúng' });
         }
 
-        // Check email verification
+        // Removed email verification check to allow immediate login
+        /*
         if (!user.emailVerified) {
             return res.status(403).json({
                 message: 'Email chưa được xác thực. Vui lòng kiểm tra hộp thư.',
@@ -110,12 +115,13 @@ router.post('/login', async (req, res) => {
                 email: user.email,
             });
         }
+        */
 
         const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
 
         res.json({
             message: 'Đăng nhập thành công',
-            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: user.balance },
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: user.balance, emailVerified: user.emailVerified },
             token,
         });
     } catch (error) {
@@ -147,6 +153,7 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
                 email: user.email,
                 role: user.role,
                 balance: user.balance,
+                emailVerified: user.emailVerified
             }
         });
     } catch (error) {
@@ -170,7 +177,7 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
 
         res.json({
             message: 'Cập nhật thành công',
-            user: { id: user!.id, name: user!.name, email: user!.email, role: user!.role, balance: user!.balance },
+            user: { id: user!.id, name: user!.name, email: user!.email, role: user!.role, balance: user!.balance, emailVerified: user!.emailVerified },
         });
     } catch (error) {
         console.error(error);
@@ -289,6 +296,83 @@ router.post('/resend-verification', async (req, res) => {
         });
 
         res.json({ message: 'Đã gửi lại email xác thực. Vui lòng kiểm tra hộp thư.' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Forgot Password
+router.post('/forgot-password', async (req, res) => {
+    try {
+        const { email } = req.body;
+
+        const user = await db.query.users.findFirst({
+            where: eq(users.email, email),
+        });
+
+        if (!user) {
+            // Don't reveal if email exists, but return success message
+            return res.json({ message: 'Nếu email tồn tại trong hệ thống, chúng tôi sẽ gửi link đặt lại mật khẩu.' });
+        }
+
+        // Generate reset token
+        const resetToken = generateVerificationToken();
+        const resetExpires = new Date();
+        resetExpires.setHours(resetExpires.getHours() + 1); // 1 hour expiry
+
+        await db.update(users)
+            .set({ 
+                resetPasswordToken: resetToken, 
+                resetPasswordExpires: resetExpires.toISOString() 
+            })
+            .where(eq(users.id, user.id));
+
+        // Send reset email
+        await sendResetPasswordEmail({
+            to: email,
+            name: user.name,
+            token: resetToken,
+        });
+
+        res.json({ message: 'Đã gửi link đặt lại mật khẩu. Vui lòng kiểm tra hộp thư.' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Reset Password
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { token, password } = req.body;
+
+        const user = await db.query.users.findFirst({
+            where: eq(users.resetPasswordToken, token),
+        });
+
+        if (!user) {
+            return res.status(400).json({ message: 'Link đặt lại mật khẩu không hợp lệ' });
+        }
+
+        // Check if token expired
+        if (user.resetPasswordExpires && new Date(user.resetPasswordExpires) < new Date()) {
+            return res.status(400).json({ message: 'Link đặt lại mật khẩu đã hết hạn' });
+        }
+
+        // Hash new password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Update password and clear token
+        await db.update(users)
+            .set({
+                password: hashedPassword,
+                resetPasswordToken: null,
+                resetPasswordExpires: null
+            })
+            .where(eq(users.id, user.id));
+
+        res.json({ message: 'Đặt lại mật khẩu thành công! Bạn có thể đăng nhập ngay.' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });

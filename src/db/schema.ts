@@ -12,8 +12,10 @@ export const users = sqliteTable('users', {
     emailVerified: integer('email_verified', { mode: 'boolean' }).default(true).notNull(), // default true for existing users
     verificationToken: text('verification_token'),
     verificationExpires: text('verification_expires'),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    resetPasswordToken: text('reset_password_token'),
+    resetPasswordExpires: text('reset_password_expires'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Categories table
@@ -23,8 +25,8 @@ export const categories = sqliteTable('categories', {
     description: text('description'),
     image: text('image'),
     active: integer('active', { mode: 'boolean' }).default(true).notNull(),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Products table
@@ -39,8 +41,8 @@ export const products = sqliteTable('products', {
     soldCount: integer('sold_count').default(0).notNull(),
     image: text('image'),
     active: integer('active', { mode: 'boolean' }).default(true).notNull(),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Promotions table
@@ -58,8 +60,8 @@ export const promotions = sqliteTable('promotions', {
     startDate: text('start_date'),
     endDate: text('end_date'),
     active: integer('active', { mode: 'boolean' }).default(true).notNull(),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Orders table
@@ -72,8 +74,8 @@ export const orders = sqliteTable('orders', {
     total: real('total').notNull(),
     promoCode: text('promo_code'),
     note: text('note'),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Order items table
@@ -99,7 +101,7 @@ export const transactions = sqliteTable('transactions', {
     description: text('description'),
     reference: text('reference'),
     orderId: integer('order_id').references(() => orders.id),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Settings table (key-value store for admin configurations)
@@ -108,7 +110,7 @@ export const settings = sqliteTable('settings', {
     key: text('key').notNull().unique(),
     value: text('value'),
     description: text('description'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Deposits table (pending deposit requests)
@@ -119,8 +121,8 @@ export const deposits = sqliteTable('deposits', {
     status: text('status', { enum: ['pending', 'completed', 'failed', 'expired'] }).default('pending').notNull(),
     reference: text('reference').notNull().unique(),
     transactionId: text('transaction_id'),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Product accounts (the actual digital goods)
@@ -130,8 +132,17 @@ export const productAccounts = sqliteTable('product_accounts', {
     orderId: integer('order_id').references(() => orders.id), // Link to order when sold
     data: text('data').notNull(), // username|password
     status: text('status', { enum: ['available', 'sold'] }).default('available').notNull(),
-    createdAt: text('created_at').default('CURRENT_TIMESTAMP'),
-    updatedAt: text('updated_at').default('CURRENT_TIMESTAMP'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
+});
+
+// Product images (gallery)
+export const productImages = sqliteTable('product_images', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    productId: integer('product_id').references(() => products.id).notNull(),
+    url: text('url').notNull(),
+    sortOrder: integer('sort_order').default(0).notNull(),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 });
 
 // Relations
@@ -150,6 +161,7 @@ export const productsRelations = relations(products, ({ one, many }) => ({
         references: [categories.id],
     }),
     accounts: many(productAccounts),
+    images: many(productImages),
 }));
 
 export const ordersRelations = relations(orders, ({ one, many }) => ({
@@ -191,6 +203,13 @@ export const productAccountsRelations = relations(productAccounts, ({ one }) => 
     order: one(orders, {
         fields: [productAccounts.orderId],
         references: [orders.id],
+    }),
+}));
+
+export const productImagesRelations = relations(productImages, ({ one }) => ({
+    product: one(products, {
+        fields: [productImages.productId],
+        references: [products.id],
     }),
 }));
 

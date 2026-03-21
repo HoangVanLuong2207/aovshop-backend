@@ -11,6 +11,12 @@ interface SendVerificationEmailParams {
     token: string;
 }
 
+interface SendResetPasswordEmailParams {
+    to: string;
+    name: string;
+    token: string;
+}
+
 // Helper to get shop name from database
 async function getShopName(): Promise<string> {
     try {
@@ -23,7 +29,8 @@ async function getShopName(): Promise<string> {
 }
 
 export async function sendVerificationEmail({ to, name, token }: SendVerificationEmailParams): Promise<boolean> {
-    const verifyUrl = `${process.env.FRONTEND_URL}/verify-email/${token}`;
+    const verifyUrl = `${process.env.FRONTEND_URL}verify-email/${token}`;
+    console.log(`\n--- [TESTING] Verification Link for ${to} ---\n${verifyUrl}\n-------------------------------------------\n`);
     const shopName = await getShopName();
 
     const htmlContent = `
@@ -108,4 +115,76 @@ export function getVerificationExpiry(): string {
     const expiry = new Date();
     expiry.setHours(expiry.getHours() + 24);
     return expiry.toISOString();
+}
+
+export async function sendResetPasswordEmail({ to, name, token }: SendResetPasswordEmailParams): Promise<boolean> {
+    const resetUrl = `${process.env.FRONTEND_URL}reset-password?token=${token}`;
+    console.log(`\n--- [TESTING] Reset Password Link for ${to} ---\n${resetUrl}\n---------------------------------------------\n`);
+    const shopName = await getShopName();
+
+    const htmlContent = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h1 style="color: #6366f1; text-align: center;">Đặt lại mật khẩu</h1>
+            <p>Xin chào <strong>${name}</strong>,</p>
+            <p>Bạn đã yêu cầu đặt lại mật khẩu cho tài khoản tại <strong>${shopName}</strong>. Vui lòng click vào nút bên dưới để tiến hành:</p>
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="${resetUrl}" 
+                   style="background: linear-gradient(135deg, #6366f1, #8b5cf6);
+                          color: white;
+                          padding: 15px 30px;
+                          text-decoration: none;
+                          border-radius: 8px;
+                          font-weight: bold;
+                          display: inline-block;">
+                    Đặt lại mật khẩu
+                </a>
+            </div>
+            <p style="color: #666; font-size: 14px;">
+                Hoặc copy link sau vào trình duyệt:<br>
+                <a href="${resetUrl}" style="color: #6366f1;">${resetUrl}</a>
+            </p>
+            <p style="color: #999; font-size: 12px;">
+                Link này sẽ hết hạn sau 1 giờ. Nếu bạn không yêu cầu thay đổi mật khẩu, vui lòng bỏ qua email này.
+            </p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #999; font-size: 12px; text-align: center;">
+                © ${new Date().getFullYear()} ${shopName}. All rights reserved.
+            </p>
+        </div>
+    `;
+
+    try {
+        console.log('Sending reset password email via Brevo HTTP API to:', to);
+
+        const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+            method: 'POST',
+            headers: {
+                'accept': 'application/json',
+                'api-key': process.env.BREVO_API_KEY!,
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                sender: {
+                    name: shopName,
+                    email: process.env.BREVO_SENDER_EMAIL,
+                },
+                to: [{ email: to, name }],
+                subject: 'Yêu cầu đặt lại mật khẩu',
+                htmlContent,
+            }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json();
+            console.error('Brevo API error:', errorData);
+            return false;
+        }
+
+        const result = await response.json() as { messageId?: string };
+        console.log(`Reset password email sent to ${to}, messageId:`, result.messageId);
+        return true;
+    } catch (error) {
+        console.error('Error sending reset password email:', error);
+        return false;
+    }
 }

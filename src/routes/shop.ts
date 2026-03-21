@@ -69,6 +69,7 @@ const mapProduct = (p: any) => ({
     stock: p.stock,
     sold_count: p.soldCount,
     image: p.image,
+    images: p.images || [],
     category_id: p.categoryId,
     active: p.active,
     created_at: p.createdAt,
@@ -211,6 +212,7 @@ router.get('/products/:id', async (req, res) => {
             where: eq(products.id, parseInt(req.params.id)),
             with: {
                 category: true,
+                images: true,
             },
         });
 

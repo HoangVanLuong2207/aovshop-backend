@@ -1,7 +1,7 @@
 import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts } from '../db/schema.js';
+import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages } from '../db/schema.js';
 import { eq, desc, sql, and, inArray, gte, lte, like } from 'drizzle-orm';
 
 
@@ -107,7 +107,7 @@ router.delete('/categories/:id', async (req, res) => {
 router.get('/products', async (req, res) => {
     try {
         const result = await db.query.products.findMany({
-            with: { category: true },
+            with: { category: true, images: true },
             orderBy: desc(products.id),
         });
         res.json({ data: result });
@@ -119,7 +119,7 @@ router.get('/products', async (req, res) => {
 
 router.post('/products', async (req, res) => {
     try {
-        const { category_id, name, description, price, sale_price, stock, image, active } = req.body;
+        const { category_id, name, description, price, sale_price, stock, image, active, images } = req.body;
 
         const [product] = await db.insert(products).values({
             categoryId: category_id ? parseInt(category_id) : null,
@@ -131,6 +131,17 @@ router.post('/products', async (req, res) => {
             image: image || null,
             active: active === '1' || active === 'true' || active === true,
         }).returning();
+
+        // Save gallery images
+        if (images && Array.isArray(images) && images.length > 0) {
+            const imageValues = images.map((url: string, index: number) => ({
+                productId: product.id,
+                url,
+                sortOrder: index,
+            }));
+            await db.insert(productImages).values(imageValues);
+        }
+
         res.json(product);
     } catch (error) {
         console.error(error);
@@ -140,7 +151,8 @@ router.post('/products', async (req, res) => {
 
 const handleProductUpdate = async (req: any, res: any) => {
     try {
-        const { category_id, name, description, price, sale_price, stock, image, active } = req.body;
+        const { category_id, name, description, price, sale_price, stock, image, active, images } = req.body;
+        const productId = parseInt(req.params.id);
         const updateData: any = {
             categoryId: category_id ? parseInt(category_id) : null,
             name,
@@ -157,10 +169,24 @@ const handleProductUpdate = async (req: any, res: any) => {
 
         await db.update(products)
             .set(updateData)
-            .where(eq(products.id, parseInt(req.params.id)));
+            .where(eq(products.id, productId));
+
+        // Replace gallery images
+        if (images !== undefined && Array.isArray(images)) {
+            await db.delete(productImages).where(eq(productImages.productId, productId));
+            if (images.length > 0) {
+                const imageValues = images.map((url: string, index: number) => ({
+                    productId,
+                    url,
+                    sortOrder: index,
+                }));
+                await db.insert(productImages).values(imageValues);
+            }
+        }
 
         const product = await db.query.products.findFirst({
-            where: eq(products.id, parseInt(req.params.id)),
+            where: eq(products.id, productId),
+            with: { images: true },
         });
         res.json(product);
     } catch (error) {
@@ -175,6 +201,9 @@ router.put('/products/:id', handleProductUpdate);
 router.delete('/products/:id', async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
+
+        // Delete gallery images
+        await db.delete(productImages).where(eq(productImages.productId, productId));
 
         // Delete available accounts (chưa bán - có thể xóa hoàn toàn)
         await db.delete(productAccounts).where(
