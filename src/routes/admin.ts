@@ -805,7 +805,7 @@ router.get('/payment-accounts', async (req, res) => {
 // Create payment account
 router.post('/payment-accounts', async (req, res) => {
     try {
-        const { bankName, accountNumber, accountName, description, image, isActive } = req.body;
+        const { bankName, accountNumber, accountName, merchantId, secretKey, description, image, isActive } = req.body;
         
         if (!bankName || !accountNumber || !accountName) {
             return res.status(400).json({ message: 'Thiếu thông tin bắt buộc' });
@@ -815,6 +815,8 @@ router.post('/payment-accounts', async (req, res) => {
             bankName,
             accountNumber,
             accountName,
+            merchantId,
+            secretKey,
             description,
             image,
             isActive: isActive ?? true,
@@ -831,13 +833,15 @@ router.post('/payment-accounts', async (req, res) => {
 router.patch('/payment-accounts/:id', async (req, res) => {
     try {
         const id = parseInt(req.params.id);
-        const { bankName, accountNumber, accountName, description, image, isActive } = req.body;
+        const { bankName, accountNumber, accountName, merchantId, secretKey, description, image, isActive } = req.body;
 
         const [updatedAccount] = await db.update(paymentAccounts)
             .set({
                 bankName,
                 accountNumber,
                 accountName,
+                merchantId,
+                secretKey,
                 description,
                 image,
                 isActive,

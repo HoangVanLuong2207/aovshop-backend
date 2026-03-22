@@ -12,6 +12,14 @@ router.get('/banks', async (req, res) => {
     try {
         const banks = await db.query.paymentAccounts.findMany({
             where: eq(paymentAccounts.isActive, true),
+            columns: {
+                id: true,
+                bankName: true,
+                accountNumber: true,
+                accountName: true,
+                description: true,
+                image: true,
+            }
         });
         res.json(banks);
     } catch (error) {
@@ -176,31 +184,46 @@ router.post('/webhook', async (req, res) => {
     try {
         console.log('Webhook received:', JSON.stringify(req.body));
 
-        // Get Secret Key from settings
-        const secretKeySetting = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_secret_key'),
-        });
-
-        // Verify Authorization header (Mandatory if secret key is set)
-        if (secretKeySetting?.value) {
-            const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-            const expectedAuth = `Apikey ${secretKeySetting.value}`;
-
-            if (authHeader !== expectedAuth) {
-                console.log('Invalid authorization - mismatch!');
-                return res.status(401).json({ success: false, message: 'Unauthorized' });
-            }
-        } else {
-            // SECURITY WARNING: SePay Webhook should always have a secret key
-            console.warn('⚠️ WARNING: SePay Secret Key is not configured. Webhook is vulnerable!');
-        }
-
         const {
             content,
             transferAmount,
             id: transactionId,
             gateway,
         } = req.body;
+
+        // Get Webhook Secret Key (Individual or Global)
+        let webhookSecretKey = '';
+        
+        // 1. Try to find individual secret key for this bank (gateway)
+        if (gateway) {
+            const bankAccount = await db.query.paymentAccounts.findFirst({
+                where: and(eq(paymentAccounts.bankName, gateway), eq(paymentAccounts.isActive, true)),
+            });
+            if (bankAccount?.secretKey) {
+                webhookSecretKey = bankAccount.secretKey;
+            }
+        }
+
+        // 2. If not found, use global secret key
+        if (!webhookSecretKey) {
+            const secretKeySetting = await db.query.settings.findFirst({
+                where: eq(settings.key, 'sepay_secret_key'),
+            });
+            webhookSecretKey = secretKeySetting?.value || '';
+        }
+
+        // Verify Authorization header
+        if (webhookSecretKey) {
+            const authHeader = req.headers['authorization'] || req.headers['Authorization'];
+            const expectedAuth = `Apikey ${webhookSecretKey}`;
+
+            if (authHeader !== expectedAuth) {
+                console.log('Invalid authorization for gateway:', gateway);
+                return res.status(401).json({ success: false, message: 'Unauthorized' });
+            }
+        } else {
+            console.warn('⚠️ WARNING: No Secret Key found for gateway:', gateway);
+        }
 
         if (!content || !transferAmount || !transactionId) {
             return res.json({ success: false, message: 'Missing required fields' });

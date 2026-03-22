@@ -151,6 +151,8 @@ export const paymentAccounts = sqliteTable('payment_accounts', {
     bankName: text('bank_name').notNull(), // e.g., MB, VCB
     accountNumber: text('account_number').notNull(),
     accountName: text('account_name').notNull(),
+    merchantId: text('merchant_id'), // Individual Merchant ID
+    secretKey: text('secret_key'),   // Individual Secret Key
     description: text('description'),
     image: text('image'), // Bank logo URL
     isActive: integer('is_active', { mode: 'boolean' }).default(true).notNull(),
