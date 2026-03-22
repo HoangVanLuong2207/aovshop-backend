@@ -18,6 +18,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust proxy for Render/Cloudflare/Proxies
+app.set('trust proxy', 1);
+
 // Rate limiting - General: 100 requests per minute per IP
 const generalLimiter = rateLimit({
     windowMs: 60 * 1000, // 1 minute
@@ -108,7 +111,16 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authLimiter, authRoutes); // 5 req/min - prevent brute force
 app.use('/api/shop', shopRoutes); // Uses general limit (100 req/min)
 app.use('/api/orders', ordersLimiter, ordersRoutes); // 20 req/min - prevent order spam
-app.use('/api/deposit', depositLimiter, depositRoutes); // 10 req/min - prevent deposit spam
+
+// Special handling for deposit: webhook needs its own limiter (or no limiter), while other routes need depositLimiter
+app.use('/api/deposit/webhook', webhookLimiter); // Apply specific webhook limiter
+app.use('/api/deposit', (req, res, next) => {
+    // Skip general deposit limiter for the webhook path
+    if (req.path === '/webhook' || req.path === '/webhook/') {
+        return next();
+    }
+    return depositLimiter(req, res, next);
+}, depositRoutes);
 app.use('/api/admin', adminLimiter, adminRoutes); // 50 req/min
 
 // 404 handler
