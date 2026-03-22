@@ -229,3 +229,14 @@ export const productImagesRelations = relations(productImages, ({ one }) => ({
     }),
 }));
 
+export const depositsRelations = relations(deposits, ({ one }) => ({
+    user: one(users, {
+        fields: [deposits.userId],
+        references: [users.id],
+    }),
+    bank: one(paymentAccounts, {
+        fields: [deposits.bankId],
+        references: [paymentAccounts.id],
+    }),
+}));
+

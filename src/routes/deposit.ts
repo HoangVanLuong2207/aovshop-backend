@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import crypto from 'crypto';
 import { db } from '../db/index.js';
 import { settings, deposits, users, transactions, paymentAccounts } from '../db/schema.js';
 import { eq, and, lt, sql } from 'drizzle-orm';
@@ -7,13 +6,9 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 
-// Get active payment accounts with usage check
+// Get active payment accounts with usage check (for month reach 50 orders)
 router.get('/banks', async (req, res) => {
     try {
-        const startOfMonth = new Date();
-        startOfMonth.setDate(1);
-        startOfMonth.setHours(0, 0, 0, 0);
-
         const banks = await db.query.paymentAccounts.findMany({
             where: eq(paymentAccounts.isActive, true),
             columns: {
@@ -26,7 +21,7 @@ router.get('/banks', async (req, res) => {
             }
         });
 
-        // Check limits for each bank
+        // Check limits for each bank (max 50 completed deposits per month)
         const availableBanks = [];
         for (const bank of banks) {
             const countResult = await db.select({ count: sql<number>`count(*)` })
@@ -38,8 +33,9 @@ router.get('/banks', async (req, res) => {
                     sql`strftime('%Y', ${deposits.createdAt}) = strftime('%Y', 'now')`
                 ));
             
-            if ((countResult[0]?.count || 0) < 50) {
-                availableBanks.push({ ...bank, currentMonthCount: (countResult[0]?.count || 0) });
+            const count = countResult[0]?.count || 0;
+            if (count < 50) {
+                availableBanks.push({ ...bank, currentMonthCount: count });
             }
         }
 
@@ -53,57 +49,31 @@ router.get('/banks', async (req, res) => {
 // Cleanup expired deposits (pending > 2 hours)
 export const cleanupExpiredDeposits = async () => {
     try {
-        // Calculate timestamp 2 hours ago
         const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-
-        // Update all pending deposits older than 2 hours to expired
         const result = await db.update(deposits)
-            .set({
-                status: 'expired',
-                updatedAt: new Date().toISOString()
-            })
-            .where(
-                and(
-                    eq(deposits.status, 'pending'),
-                    lt(deposits.createdAt, twoHoursAgo)
-                )
-            )
+            .set({ status: 'expired', updatedAt: new Date().toISOString() })
+            .where(and(eq(deposits.status, 'pending'), lt(deposits.createdAt, twoHoursAgo)))
             .returning({ id: deposits.id });
-
-        const count = result.length;
-        if (count > 0) {
-            console.log(`[Cleanup] Marked ${count} expired deposit(s)`);
-        }
-        return count;
+        return result.length;
     } catch (error) {
         console.error('[Cleanup] Error:', error);
         return 0;
     }
 };
 
-// Public cleanup endpoint for external cron
 router.get('/cleanup', async (req, res) => {
     const count = await cleanupExpiredDeposits();
     res.json({ success: true, expired_count: count });
 });
 
-// Public endpoint - Get shop info (name, logo, banner) - no auth required
 router.get('/shop-info', async (req, res) => {
     try {
-        const shopName = await db.query.settings.findFirst({
-            where: eq(settings.key, 'shop_name'),
-        });
-        const shopLogo = await db.query.settings.findFirst({
-            where: eq(settings.key, 'shop_logo'),
-        });
-        const shopBanner = await db.query.settings.findFirst({
-            where: eq(settings.key, 'shop_banner'),
-        });
-
+        const s = await db.query.settings.findMany();
+        const config = Object.fromEntries(s.map(x => [x.key, x.value]));
         res.json({
-            shop_name: shopName?.value || 'AOV Shop',
-            shop_logo: shopLogo?.value || '',
-            shop_banner: shopBanner?.value || '',
+            shop_name: config.shop_name || 'AOV Shop',
+            shop_logo: config.shop_logo || '',
+            shop_banner: config.shop_banner || '',
         });
     } catch (error) {
         console.error(error);
@@ -111,88 +81,62 @@ router.get('/shop-info', async (req, res) => {
     }
 });
 
-// Public endpoint - Get bank info for payment (no auth required)
-router.get('/bank-info', async (req, res) => {
-    try {
-        const bankAccount = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_bank_account'),
-        });
-        const bankName = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_bank_name'),
-        });
-        const accountName = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_account_name'),
-        });
-
-        if (!bankAccount?.value) {
-            return res.status(404).json({ message: 'Chưa cấu hình thông tin ngân hàng' });
-        }
-
-        res.json({
-            sepay_bank_account: bankAccount.value,
-            sepay_bank_name: bankName?.value || 'MB',
-            sepay_account_name: accountName?.value || 'AOVSHOP',
-        });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Lỗi server' });
-    }
-});
-
-// Get SePay payment info for deposit
+// Create deposit with AUTO-ROTATION logic
 router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { amount } = req.body;
-
         if (!amount || amount < 10000) {
-            return res.status(400).json({ message: 'Số tiền nạp tối thiểu 10,000đ' });
+            return res.status(400).json({ message: 'Số tiền nạp tối thiểu là 10.000đ' });
         }
 
-        // Get SePay settings
-        const merchantId = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_merchant_id'),
-        });
-        const bankAccount = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_bank_account'),
-        });
-        const bankName = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_bank_name'),
-        });
-        const accountName = await db.query.settings.findFirst({
-            where: eq(settings.key, 'sepay_account_name'),
+        const userId = req.user!.id;
+
+        // Auto-select a bank that hasn't reached the 50 orders/month limit
+        const allActiveBanks = await db.query.paymentAccounts.findMany({
+            where: eq(paymentAccounts.isActive, true),
         });
 
-
-        if (!merchantId?.value || !bankAccount?.value) {
-            return res.status(500).json({ message: 'Hệ thống thanh toán chưa được cấu hình' });
+        let selectedBank = null;
+        for (const bank of allActiveBanks) {
+            const countResult = await db.select({ count: sql<number>`count(*)` })
+                .from(deposits)
+                .where(and(
+                    eq(deposits.bankId, bank.id),
+                    eq(deposits.status, 'completed'),
+                    sql`strftime('%m', ${deposits.createdAt}) = strftime('%m', 'now')`,
+                    sql`strftime('%Y', ${deposits.createdAt}) = strftime('%Y', 'now')`
+                ));
+            
+            if ((countResult[0]?.count || 0) < 50) {
+                selectedBank = bank;
+                break;
+            }
         }
 
-        // Generate transfer content: NAP + DDMMYYHHMMSS + U + UserID
+        if (!selectedBank) {
+            return res.status(503).json({ message: 'Hiện tại các cổng nạp đều đạt giới hạn đơn trong tháng, vui lòng liên hệ Admin.' });
+        }
+
+        // Generate transfer content: NAP + timestamp + U + UserID
         const now = new Date();
         const pad = (n: number) => n.toString().padStart(2, '0');
         const timestamp = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear().toString().slice(-2)}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-        const transferContent = `NAP${timestamp}U${req.user!.id}`;
+        const reference = `NAP${timestamp}U${userId}`;
 
-        // Create pending deposit (ID is auto-generated by database)
-        const [deposit] = await db.insert(deposits).values({
-            userId: req.user!.id,
+        const [newDeposit] = await db.insert(deposits).values({
+            userId,
             amount: parseFloat(amount),
+            reference,
+            bankId: selectedBank.id,
             status: 'pending',
-            reference: transferContent, // Store the transfer content as reference
         }).returning();
 
-        // Return payment info (order_code = deposit.id)
         res.json({
-            deposit,
-            payment_info: {
-                bank_name: bankName?.value || 'Ngân hàng',
-                account_number: bankAccount.value,
-                account_name: accountName?.value || 'AOV SHOP',
-                amount: parseFloat(amount),
-                order_code: deposit.id, // Auto ID from database
-                content: transferContent,
-                qr_url: `https://img.vietqr.io/image/${bankName?.value || 'MB'}-${bankAccount.value}-compact2.png?amount=${amount}&addInfo=${transferContent}&accountName=${encodeURIComponent(accountName?.value || 'AOVSHOP')}`,
-            },
+            ...newDeposit,
+            bank_name: selectedBank.bankName,
+            account_number: selectedBank.accountNumber,
+            account_name: selectedBank.accountName,
+            qr_url: `https://img.vietqr.io/image/${selectedBank.bankName}-${selectedBank.accountNumber}-compact2.png?amount=${amount}&addInfo=${reference}&accountName=${encodeURIComponent(selectedBank.accountName)}`,
         });
     } catch (error) {
         console.error(error);
@@ -200,116 +144,65 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
     }
 });
 
-// SePay Webhook - called when payment is confirmed
-// Nội dung chuyển khoản = OrderCode_UserID (ví dụ: NAP123456_1)
+// Webhook with individual Secret Key verification
 router.post('/webhook', async (req, res) => {
     try {
-        console.log('Webhook received:', JSON.stringify(req.body));
+        const { content, transferAmount, id: transactionId, gateway } = req.body;
+        if (!content || !transferAmount || !transactionId) {
+            return res.json({ success: false, message: 'Missing fields' });
+        }
 
-        const {
-            content,
-            transferAmount,
-            id: transactionId,
-            gateway,
-        } = req.body;
-
-        // Get Webhook Secret Key (Individual or Global)
-        let webhookSecretKey = '';
-        
-        // 1. Try to find individual secret key for this bank (gateway)
+        // Verify Secret Key
+        let secretKey = '';
         if (gateway) {
-            const bankAccount = await db.query.paymentAccounts.findFirst({
+            const bank = await db.query.paymentAccounts.findFirst({
                 where: and(eq(paymentAccounts.bankName, gateway), eq(paymentAccounts.isActive, true)),
             });
-            if (bankAccount?.secretKey) {
-                webhookSecretKey = bankAccount.secretKey;
-            }
+            secretKey = bank?.secretKey || '';
         }
 
-        // 2. If not found, use global secret key
-        if (!webhookSecretKey) {
-            const secretKeySetting = await db.query.settings.findFirst({
-                where: eq(settings.key, 'sepay_secret_key'),
-            });
-            webhookSecretKey = secretKeySetting?.value || '';
+        if (!secretKey) {
+            const globalKey = await db.query.settings.findFirst({ where: eq(settings.key, 'sepay_secret_key') });
+            secretKey = globalKey?.value || '';
         }
 
-        // Verify Authorization header
-        if (webhookSecretKey) {
-            const authHeader = req.headers['authorization'] || req.headers['Authorization'];
-            const expectedAuth = `Apikey ${webhookSecretKey}`;
-
-            if (authHeader !== expectedAuth) {
-                console.log('Invalid authorization for gateway:', gateway);
+        if (secretKey) {
+            const auth = req.headers['authorization'] || req.headers['Authorization'];
+            if (auth !== `Apikey ${secretKey}`) {
                 return res.status(401).json({ success: false, message: 'Unauthorized' });
             }
-        } else {
-            console.warn('⚠️ WARNING: No Secret Key found for gateway:', gateway);
         }
 
-        if (!content || !transferAmount || !transactionId) {
-            return res.json({ success: false, message: 'Missing required fields' });
-        }
-
-        // Parse content format: NAP301224111342U1 (OrderCode U UserID)
         const match = content.match(/NAP(\d+)U(\d+)/i);
-        if (!match) {
-            console.log('Invalid content format:', content);
-            return res.json({ success: false, message: 'Invalid content format' });
-        }
+        if (!match) return res.json({ success: false, message: 'Invalid content' });
 
         const userId = parseInt(match[2]);
-        const amount = parseFloat(transferAmount) || 0;
+        const amount = parseFloat(transferAmount);
 
-        if (amount <= 0) {
-            return res.json({ success: false, message: 'Invalid amount' });
-        }
-
-        // Execute everything in a transaction to prevent race conditions and inconsistency
         const result = await db.transaction(async (tx) => {
-            // 1. Check for duplicate transaction (Replay Attack protection)
-            const existingTx = await tx.query.transactions.findFirst({
-                where: eq(transactions.reference, transactionId.toString()),
-            });
+            const existing = await tx.query.transactions.findFirst({ where: eq(transactions.reference, transactionId.toString()) });
+            if (existing) return { duplicate: true };
 
-            if (existingTx) {
-                console.log('Duplicate transaction detected:', transactionId);
-                return { success: false, message: 'Transaction already processed', duplicate: true };
-            }
+            const user = await tx.query.users.findFirst({ where: eq(users.id, userId) });
+            if (!user) return { error: 'User not found' };
 
-            // 2. Find user
-            const user = await tx.query.users.findFirst({
-                where: eq(users.id, userId),
-            });
-
-            if (!user) {
-                return { success: false, message: 'User not found' };
-            }
-
-            // 3. Update user balance
             const currentBalance = user.balance || 0;
             const newBalance = currentBalance + amount;
 
-            await tx.update(users)
-                .set({ balance: newBalance })
-                .where(eq(users.id, user.id));
-
-            // 4. Update deposit status if found
+            await tx.update(users).set({ balance: newBalance }).where(eq(users.id, userId));
+            
             const deposit = await tx.query.deposits.findFirst({
-                where: and(eq(deposits.reference, match[0]), eq(deposits.status, 'pending')),
+                where: and(eq(deposits.reference, match[0]), eq(deposits.status, 'pending'))
             });
 
             if (deposit) {
-                await tx.update(deposits)
-                    .set({ status: 'completed' })
-                    .where(eq(deposits.id, deposit.id));
+                await tx.update(deposits).set({ status: 'completed' }).where(eq(deposits.id, deposit.id));
             }
 
-            // 5. Create transaction record
             await tx.insert(transactions).values({
-                userId: user.id,
+                userId,
                 type: 'deposit',
-                amount: amount,
+                amount,
                 balanceBefore: currentBalance,
                 balanceAfter: newBalance,
                 status: 'completed',
@@ -317,88 +210,49 @@ router.post('/webhook', async (req, res) => {
                 reference: transactionId.toString(),
             });
 
-            return { success: true, userId, amount, newBalance };
+            return { success: true };
         });
 
-        if (result.duplicate) {
-            return res.json({ success: true, message: 'Already processed' }); // Return 200 to gateway
-        }
+        if (result.duplicate) return res.json({ success: true, message: 'Already processed' });
+        if (result.error) return res.json({ success: false, message: result.error });
 
-        if (!result.success) {
-            return res.json(result);
-        }
-
-        console.log('Deposit completed for user:', userId, 'Amount:', amount, 'New balance:', result.newBalance);
-        res.json(result);
-
+        res.json({ success: true });
     } catch (error) {
         console.error('Webhook error:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
+        res.status(500).json({ success: false });
     }
 });
 
-// Check deposit status
 router.get('/status/:reference', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const deposit = await db.query.deposits.findFirst({
-            where: and(
-                eq(deposits.reference, req.params.reference),
-                eq(deposits.userId, req.user!.id)
-            ),
+            where: and(eq(deposits.reference, req.params.reference), eq(deposits.userId, req.user!.id)),
         });
-
-        if (!deposit) {
-            return res.status(404).json({ message: 'Không tìm thấy giao dịch' });
-        }
-
-        res.json(deposit);
+        res.json(deposit || { status: 'not_found' });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Lỗi server' });
+        res.status(500).json({ message: 'Error' });
     }
 });
 
-// Get deposit history
 router.get('/history', authMiddleware, async (req: AuthRequest, res) => {
     try {
-        const userDeposits = await db.query.deposits.findMany({
+        const data = await db.query.deposits.findMany({
             where: eq(deposits.userId, req.user!.id),
-            orderBy: (deposits, { desc }) => [desc(deposits.id)],
+            with: { bank: true },
+            orderBy: (d, { desc }) => [desc(d.id)],
         });
-
-        res.json(userDeposits);
+        res.json(data);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Lỗi server' });
+        res.status(500).json({ message: 'Error' });
     }
 });
 
-// Get user transactions (for frontend compatibility)
-router.get('/transactions', authMiddleware, async (req: AuthRequest, res) => {
-    try {
-        const userTransactions = await db.query.transactions.findMany({
-            where: eq(transactions.userId, req.user!.id),
-            orderBy: (transactions, { desc }) => [desc(transactions.id)],
-        });
-
-        res.json({ data: userTransactions });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Lỗi server' });
-    }
-});
-
-// Get balance
 router.get('/balance', authMiddleware, async (req: AuthRequest, res) => {
     try {
-        const user = await db.query.users.findFirst({
-            where: eq(users.id, req.user!.id),
-        });
-
+        const user = await db.query.users.findFirst({ where: eq(users.id, req.user!.id) });
         res.json({ balance: user?.balance || 0 });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Lỗi server' });
+        res.status(500).json({ message: 'Error' });
     }
 });
 
