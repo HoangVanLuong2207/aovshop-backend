@@ -145,6 +145,19 @@ export const productImages = sqliteTable('product_images', {
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 });
 
+// Payment accounts (multiple banks)
+export const paymentAccounts = sqliteTable('payment_accounts', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    bankName: text('bank_name').notNull(), // e.g., MB, VCB
+    accountNumber: text('account_number').notNull(),
+    accountName: text('account_name').notNull(),
+    description: text('description'),
+    image: text('image'), // Bank logo URL
+    isActive: integer('is_active', { mode: 'boolean' }).default(true).notNull(),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many }) => ({
     orders: many(orders),

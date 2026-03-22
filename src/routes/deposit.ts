@@ -1,11 +1,24 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { db } from '../db/index.js';
-import { settings, deposits, users, transactions } from '../db/schema.js';
+import { settings, deposits, users, transactions, paymentAccounts } from '../db/schema.js';
 import { eq, and, lt, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
+
+// Get active payment accounts (banks)
+router.get('/banks', async (req, res) => {
+    try {
+        const banks = await db.query.paymentAccounts.findMany({
+            where: eq(paymentAccounts.isActive, true),
+        });
+        res.json(banks);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
 
 // Cleanup expired deposits (pending > 2 hours)
 export const cleanupExpiredDeposits = async () => {

@@ -1,7 +1,7 @@
 import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages } from '../db/schema.js';
+import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages, paymentAccounts } from '../db/schema.js';
 import { eq, desc, sql, and, inArray, gte, lte, like } from 'drizzle-orm';
 
 
@@ -781,6 +781,95 @@ router.get('/settings/:key', async (req, res) => {
         });
 
         res.json({ value: setting?.value || null });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== PAYMENT ACCOUNTS (BANKS) ====================
+
+// Get all payment accounts
+router.get('/payment-accounts', async (req, res) => {
+    try {
+        const result = await db.query.paymentAccounts.findMany({
+            orderBy: desc(paymentAccounts.id),
+        });
+        res.json({ data: result });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Create payment account
+router.post('/payment-accounts', async (req, res) => {
+    try {
+        const { bankName, accountNumber, accountName, description, image, isActive } = req.body;
+        
+        if (!bankName || !accountNumber || !accountName) {
+            return res.status(400).json({ message: 'Thiếu thông tin bắt buộc' });
+        }
+
+        const [newAccount] = await db.insert(paymentAccounts).values({
+            bankName,
+            accountNumber,
+            accountName,
+            description,
+            image,
+            isActive: isActive ?? true,
+        }).returning();
+
+        res.json({ message: 'Thêm tài khoản thành công', data: newAccount });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Update payment account
+router.patch('/payment-accounts/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const { bankName, accountNumber, accountName, description, image, isActive } = req.body;
+
+        const [updatedAccount] = await db.update(paymentAccounts)
+            .set({
+                bankName,
+                accountNumber,
+                accountName,
+                description,
+                image,
+                isActive,
+                updatedAt: new Date().toISOString(),
+            })
+            .where(eq(paymentAccounts.id, id))
+            .returning();
+
+        if (!updatedAccount) {
+            return res.status(404).json({ message: 'Không tìm thấy tài khoản' });
+        }
+
+        res.json({ message: 'Cập nhật thành công', data: updatedAccount });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Delete payment account
+router.delete('/payment-accounts/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const result = await db.delete(paymentAccounts)
+            .where(eq(paymentAccounts.id, id))
+            .returning();
+
+        if (result.length === 0) {
+            return res.status(404).json({ message: 'Không tìm thấy tài khoản' });
+        }
+
+        res.json({ message: 'Xóa tài khoản thành công' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
