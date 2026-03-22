@@ -121,6 +121,7 @@ export const deposits = sqliteTable('deposits', {
     status: text('status', { enum: ['pending', 'completed', 'failed', 'expired'] }).default('pending').notNull(),
     reference: text('reference').notNull().unique(),
     transactionId: text('transaction_id'),
+    bankId: integer('bank_id').references(() => paymentAccounts.id),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });

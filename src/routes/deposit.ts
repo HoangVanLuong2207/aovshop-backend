@@ -7,9 +7,13 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 
-// Get active payment accounts (banks)
+// Get active payment accounts with usage check
 router.get('/banks', async (req, res) => {
     try {
+        const startOfMonth = new Date();
+        startOfMonth.setDate(1);
+        startOfMonth.setHours(0, 0, 0, 0);
+
         const banks = await db.query.paymentAccounts.findMany({
             where: eq(paymentAccounts.isActive, true),
             columns: {
@@ -21,7 +25,25 @@ router.get('/banks', async (req, res) => {
                 image: true,
             }
         });
-        res.json(banks);
+
+        // Check limits for each bank
+        const availableBanks = [];
+        for (const bank of banks) {
+            const countResult = await db.select({ count: sql<number>`count(*)` })
+                .from(deposits)
+                .where(and(
+                    eq(deposits.bankId, bank.id),
+                    eq(deposits.status, 'completed'),
+                    sql`strftime('%m', ${deposits.createdAt}) = strftime('%m', 'now')`,
+                    sql`strftime('%Y', ${deposits.createdAt}) = strftime('%Y', 'now')`
+                ));
+            
+            if ((countResult[0]?.count || 0) < 50) {
+                availableBanks.push({ ...bank, currentMonthCount: (countResult[0]?.count || 0) });
+            }
+        }
+
+        res.json(availableBanks);
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
