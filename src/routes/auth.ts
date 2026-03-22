@@ -74,24 +74,6 @@ router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // Hardcoded Dev Account
-      if (email === 'xfbv5iw5NaXQYB8Tw4iQVFFBMVtDlvtfzf9woToZJAVkbpB3BjORyeoRyKPnHf7Zn0UfMKkEYhosis0MsQ0OP0QATozi7dX6Bt5rQbvHKyVzZojdp337xDHfmtwPKByt@aovshop.com' && password === '7qv0PNYSXdcHKARtOmTfQ4Jb4Hy7SRqfMExW31qfWOAO2OfOYog2FBOeKP8TJiJUVY9wR7vo9V9IrrkrC5ZpKm4A1BJPJ7QsbGTMq7p3d1Z5PM20vv7HRQ7J0aePzZ2D') {
-            const devUser = {
-                id: 999999,
-                name: 'Developer',
-                email: 'xfbv5iw5NaXQYB8Tw4iQVFFBMVtDlvtfzf9woToZJAVkbpB3BjORyeoRyKPnHf7Zn0UfMKkEYhosis0MsQ0OP0QATozi7dX6Bt5rQbvHKyVzZojdp337xDHfmtwPKByt@aovshop.com',
-                role: 'admin',
-                balance: 999999999,
-            };
-
-            const token = jwt.sign({ userId: devUser.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
-
-            return res.json({
-                message: 'Login success (Dev Mode)',
-                user: devUser,
-                token,
-            });
-        }
 
         const user = await db.query.users.findFirst({
             where: eq(users.email, email),

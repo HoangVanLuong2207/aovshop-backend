@@ -168,18 +168,18 @@ router.post('/webhook', async (req, res) => {
             where: eq(settings.key, 'sepay_secret_key'),
         });
 
-        // Verify Authorization header if Secret Key is configured
+        // Verify Authorization header (Mandatory if secret key is set)
         if (secretKeySetting?.value) {
             const authHeader = req.headers['authorization'] || req.headers['Authorization'];
             const expectedAuth = `Apikey ${secretKeySetting.value}`;
-
-            console.log('Auth header received:', authHeader);
-            console.log('Expected auth:', expectedAuth);
 
             if (authHeader !== expectedAuth) {
                 console.log('Invalid authorization - mismatch!');
                 return res.status(401).json({ success: false, message: 'Unauthorized' });
             }
+        } else {
+            // SECURITY WARNING: SePay Webhook should always have a secret key
+            console.warn('⚠️ WARNING: SePay Secret Key is not configured. Webhook is vulnerable!');
         }
 
         const {
@@ -189,8 +189,8 @@ router.post('/webhook', async (req, res) => {
             gateway,
         } = req.body;
 
-        if (!content || !transferAmount) {
-            return res.json({ success: false, message: 'Missing content or amount' });
+        if (!content || !transferAmount || !transactionId) {
+            return res.json({ success: false, message: 'Missing required fields' });
         }
 
         // Parse content format: NAP301224111342U1 (OrderCode U UserID)
@@ -200,62 +200,79 @@ router.post('/webhook', async (req, res) => {
             return res.json({ success: false, message: 'Invalid content format' });
         }
 
-        // Extract full content and user ID from format: NAP301224111342U1
-        const transferContent = match[0]; // Full match: NAP301224111342U1
         const userId = parseInt(match[2]);
-        console.log('Transfer content:', transferContent, 'User ID:', userId, 'Amount:', transferAmount);
-
-        // Find pending deposit by reference (full transfer content)
-        const deposit = await db.query.deposits.findFirst({
-            where: and(eq(deposits.reference, transferContent), eq(deposits.status, 'pending')),
-        });
-
-        // Find user
-        const user = await db.query.users.findFirst({
-            where: eq(users.id, userId),
-        });
-
-        if (!user) {
-            console.log('User not found:', userId);
-            return res.json({ success: false, message: 'User not found' });
-        }
-
-        // Update user balance (ensure balance is a number, default to 0)
         const amount = parseFloat(transferAmount) || 0;
-        const currentBalance = user.balance || 0;
-        const newBalance = currentBalance + amount;
 
         if (amount <= 0) {
-            console.log('Invalid amount:', transferAmount);
             return res.json({ success: false, message: 'Invalid amount' });
         }
 
-        await db.update(users)
-            .set({ balance: newBalance })
-            .where(eq(users.id, user.id));
+        // Execute everything in a transaction to prevent race conditions and inconsistency
+        const result = await db.transaction(async (tx) => {
+            // 1. Check for duplicate transaction (Replay Attack protection)
+            const existingTx = await tx.query.transactions.findFirst({
+                where: eq(transactions.reference, transactionId.toString()),
+            });
 
-        // Update deposit status if found
-        if (deposit) {
-            await db.update(deposits)
-                .set({ status: 'completed' })
-                .where(eq(deposits.id, deposit.id));
-        }
+            if (existingTx) {
+                console.log('Duplicate transaction detected:', transactionId);
+                return { success: false, message: 'Transaction already processed', duplicate: true };
+            }
 
-        // Create transaction record
-        await db.insert(transactions).values({
-            userId: user.id,
-            type: 'deposit',
-            amount: amount,
-            balanceBefore: currentBalance,
-            balanceAfter: newBalance,
-            status: 'completed',
-            description: `Nạp tiền tự động qua ${gateway || 'SePay'}`,
-            reference: transactionId?.toString() || `SEPAY-${Date.now()}`,
+            // 2. Find user
+            const user = await tx.query.users.findFirst({
+                where: eq(users.id, userId),
+            });
+
+            if (!user) {
+                return { success: false, message: 'User not found' };
+            }
+
+            // 3. Update user balance
+            const currentBalance = user.balance || 0;
+            const newBalance = currentBalance + amount;
+
+            await tx.update(users)
+                .set({ balance: newBalance })
+                .where(eq(users.id, user.id));
+
+            // 4. Update deposit status if found
+            const deposit = await tx.query.deposits.findFirst({
+                where: and(eq(deposits.reference, match[0]), eq(deposits.status, 'pending')),
+            });
+
+            if (deposit) {
+                await tx.update(deposits)
+                    .set({ status: 'completed' })
+                    .where(eq(deposits.id, deposit.id));
+            }
+
+            // 5. Create transaction record
+            await tx.insert(transactions).values({
+                userId: user.id,
+                type: 'deposit',
+                amount: amount,
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                status: 'completed',
+                description: `Nạp tiền tự động qua ${gateway || 'SePay'}`,
+                reference: transactionId.toString(),
+            });
+
+            return { success: true, userId, amount, newBalance };
         });
 
-        console.log('Deposit completed for user:', userId, 'Amount:', amount, 'New balance:', newBalance);
+        if (result.duplicate) {
+            return res.json({ success: true, message: 'Already processed' }); // Return 200 to gateway
+        }
 
-        res.json({ success: true, userId, amount, newBalance });
+        if (!result.success) {
+            return res.json(result);
+        }
+
+        console.log('Deposit completed for user:', userId, 'Amount:', amount, 'New balance:', result.newBalance);
+        res.json(result);
+
     } catch (error) {
         console.error('Webhook error:', error);
         res.status(500).json({ success: false, message: 'Server error' });
