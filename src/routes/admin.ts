@@ -747,8 +747,17 @@ router.get('/settings', async (req, res) => {
 router.post('/settings', async (req, res) => {
     try {
         const settingsData = req.body;
+        const savedKeys = [];
+
+        // Define keys we want to exclude (metadata from previous GET requests)
+        const excludeKeys = ['id', 'updated_at', 'updatedAt', 'description', 'created_at', 'createdAt'];
 
         for (const [key, value] of Object.entries(settingsData)) {
+            // Only process string keys and skip excluded metadata keys
+            if (excludeKeys.includes(key) || typeof key !== 'string') continue;
+
+            const stringValue = value === null || value === undefined ? '' : String(value);
+
             // Upsert each setting
             const existing = await db.query.settings.findFirst({
                 where: eq(settings.key, key),
@@ -756,20 +765,25 @@ router.post('/settings', async (req, res) => {
 
             if (existing) {
                 await db.update(settings)
-                    .set({ value: value as string })
+                    .set({ 
+                        value: stringValue,
+                        updatedAt: new Date().toISOString()
+                    })
                     .where(eq(settings.key, key));
             } else {
                 await db.insert(settings).values({
                     key,
-                    value: value as string,
+                    value: stringValue,
                 });
             }
+            savedKeys.push(key);
         }
 
-        res.json({ message: 'Cập nhật cài đặt thành công' });
+        console.log(`[Admin] Settings updated: ${savedKeys.join(', ')}`);
+        res.json({ message: 'Cập nhật cài đặt thành công', saved: savedKeys });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: 'Lỗi server' });
+        console.error('[Admin] Error saving settings:', error);
+        res.status(500).json({ message: 'Lỗi server khi lưu cài đặt' });
     }
 });
 
