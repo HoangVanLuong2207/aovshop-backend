@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { db } from '../db/index.js';
-import { users } from '../db/schema.js';
+import { users, settings } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 
 export interface AuthRequest extends Request {
@@ -10,6 +10,7 @@ export interface AuthRequest extends Request {
         email: string;
         role: string;
     };
+    isApiRequest?: boolean;
 }
 
 export const authMiddleware = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -20,6 +21,23 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
         }
 
         const token = authHeader.split(' ')[1];
+
+        // 1. Check if token is the Static API Token from Settings
+        const apiTokenSetting = await db.query.settings.findFirst({
+            where: eq(settings.key, 'api_auth_token'),
+        });
+
+        if (apiTokenSetting && apiTokenSetting.value === token) {
+            req.user = {
+                id: 0,
+                email: 'api@system',
+                role: 'admin',
+            };
+            req.isApiRequest = true;
+            return next();
+        }
+
+        // 2. Otherwise, verify as JWT
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
 
 

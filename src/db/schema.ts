@@ -131,7 +131,7 @@ export const productAccounts = sqliteTable('product_accounts', {
     id: integer('id').primaryKey({ autoIncrement: true }),
     productId: integer('product_id').references(() => products.id).notNull(),
     orderId: integer('order_id').references(() => orders.id), // Link to order when sold
-    data: text('data').notNull(), // username|password
+    data: text('data').notNull(), // user|pass|mail
     status: text('status', { enum: ['available', 'sold'] }).default('available').notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
@@ -159,6 +159,13 @@ export const paymentAccounts = sqliteTable('payment_accounts', {
     isActive: integer('is_active', { mode: 'boolean' }).default(true).notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
+});
+
+// Site statistics table for traffic analytics
+export const siteStats = sqliteTable('site_stats', {
+    date: text('date').primaryKey(), // YYYY-MM-DD
+    visitors: integer('visitors').default(0).notNull(),
+    pageViews: integer('page_views').default(0).notNull(),
 });
 
 // Relations

@@ -8,6 +8,8 @@ import shopRoutes from './routes/shop.js';
 import ordersRoutes from './routes/orders.js';
 import depositRoutes, { cleanupExpiredDeposits } from './routes/deposit.js';
 import adminRoutes from './routes/admin.js';
+import cookieParser from 'cookie-parser';
+import { analyticsMiddleware } from './middleware/analytics.js';
 
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -88,6 +90,8 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use(cookieParser());
+app.use(analyticsMiddleware); // Apply traffic tracking
 app.use(generalLimiter); // Apply general rate limit to all routes
 
 // Serve static files from uploads directory
