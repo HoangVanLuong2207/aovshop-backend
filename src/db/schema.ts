@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core';
 import { relations } from 'drizzle-orm';
 
 // Users table
@@ -76,7 +76,10 @@ export const orders = sqliteTable('orders', {
     note: text('note'),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
-});
+}, (table) => ({
+    userIdIdx: index('idx_orders_user_id').on(table.userId),
+    createdAtIdx: index('idx_orders_created_at').on(table.createdAt),
+}));
 
 // Order items table
 export const orderItems = sqliteTable('order_items', {
@@ -102,7 +105,11 @@ export const transactions = sqliteTable('transactions', {
     reference: text('reference'),
     orderId: integer('order_id').references(() => orders.id),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
-});
+}, (table) => ({
+    userIdIdx: index('idx_transactions_user_id').on(table.userId),
+    referenceIdx: index('idx_transactions_reference').on(table.reference),
+    createdAtIdx: index('idx_transactions_created_at').on(table.createdAt),
+}));
 
 // Settings table (key-value store for admin configurations)
 export const settings = sqliteTable('settings', {
@@ -124,7 +131,11 @@ export const deposits = sqliteTable('deposits', {
     bankId: integer('bank_id').references(() => paymentAccounts.id),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
-});
+}, (table) => ({
+    userIdIdx: index('idx_deposits_user_id').on(table.userId),
+    bankStatusCreatedIdx: index('idx_deposits_bank_status_created').on(table.bankId, table.status, table.createdAt),
+    statusCreatedIdx: index('idx_deposits_status_created').on(table.status, table.createdAt),
+}));
 
 // Product accounts (the actual digital goods)
 export const productAccounts = sqliteTable('product_accounts', {
@@ -135,7 +146,10 @@ export const productAccounts = sqliteTable('product_accounts', {
     status: text('status', { enum: ['available', 'sold'] }).default('available').notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
-});
+}, (table) => ({
+    productStatusIdx: index('idx_product_accounts_product_status').on(table.productId, table.status),
+    orderIdIdx: index('idx_product_accounts_order_id').on(table.orderId),
+}));
 
 // Product images (gallery)
 export const productImages = sqliteTable('product_images', {
@@ -159,7 +173,10 @@ export const paymentAccounts = sqliteTable('payment_accounts', {
     isActive: integer('is_active', { mode: 'boolean' }).default(true).notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
-});
+}, (table) => ({
+    bankNameActiveIdx: index('idx_payment_accounts_bank_name_active').on(table.bankName, table.isActive),
+    activeIdx: index('idx_payment_accounts_is_active').on(table.isActive),
+}));
 
 // Site statistics table for traffic analytics
 export const siteStats = sqliteTable('site_stats', {

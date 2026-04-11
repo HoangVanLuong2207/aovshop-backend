@@ -1,10 +1,33 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
 import { settings, deposits, users, transactions, paymentAccounts } from '../db/schema.js';
-import { eq, and, lt, sql } from 'drizzle-orm';
+import { eq, and, lt, sql, inArray } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
+
+const getCurrentMonthDepositCountsByBank = async (bankIds: number[]) => {
+    if (bankIds.length === 0) return new Map<number, number>();
+
+    const rows = await db.select({
+        bankId: deposits.bankId,
+        count: sql<number>`count(*)`,
+    })
+        .from(deposits)
+        .where(and(
+            inArray(deposits.bankId, bankIds),
+            eq(deposits.status, 'completed'),
+            sql`strftime('%m', ${deposits.createdAt}) = strftime('%m', 'now')`,
+            sql`strftime('%Y', ${deposits.createdAt}) = strftime('%Y', 'now')`
+        ))
+        .groupBy(deposits.bankId);
+
+    return new Map<number, number>(
+        rows
+            .filter((row) => row.bankId !== null)
+            .map((row) => [row.bankId as number, row.count || 0])
+    );
+};
 
 // Get active payment accounts with usage check (for month reach 50 orders)
 router.get('/banks', async (req, res) => {
@@ -21,23 +44,11 @@ router.get('/banks', async (req, res) => {
             }
         });
 
-        // Check limits for each bank (max 50 completed deposits per month)
-        const availableBanks = [];
-        for (const bank of banks) {
-            const countResult = await db.select({ count: sql<number>`count(*)` })
-                .from(deposits)
-                .where(and(
-                    eq(deposits.bankId, bank.id),
-                    eq(deposits.status, 'completed'),
-                    sql`strftime('%m', ${deposits.createdAt}) = strftime('%m', 'now')`,
-                    sql`strftime('%Y', ${deposits.createdAt}) = strftime('%Y', 'now')`
-                ));
-            
-            const count = countResult[0]?.count || 0;
-            if (count < 50) {
-                availableBanks.push({ ...bank, currentMonthCount: count });
-            }
-        }
+        // Count once for all active banks instead of N queries.
+        const countsByBankId = await getCurrentMonthDepositCountsByBank(banks.map((b) => b.id));
+        const availableBanks = banks
+            .map((bank) => ({ ...bank, currentMonthCount: countsByBankId.get(bank.id) || 0 }))
+            .filter((bank) => bank.currentMonthCount < 50);
 
         res.json(availableBanks);
     } catch (error) {
@@ -96,22 +107,8 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
             where: eq(paymentAccounts.isActive, true),
         });
 
-        let selectedBank = null;
-        for (const bank of allActiveBanks) {
-            const countResult = await db.select({ count: sql<number>`count(*)` })
-                .from(deposits)
-                .where(and(
-                    eq(deposits.bankId, bank.id),
-                    eq(deposits.status, 'completed'),
-                    sql`strftime('%m', ${deposits.createdAt}) = strftime('%m', 'now')`,
-                    sql`strftime('%Y', ${deposits.createdAt}) = strftime('%Y', 'now')`
-                ));
-            
-            if ((countResult[0]?.count || 0) < 50) {
-                selectedBank = bank;
-                break;
-            }
-        }
+        const countsByBankId = await getCurrentMonthDepositCountsByBank(allActiveBanks.map((b) => b.id));
+        const selectedBank = allActiveBanks.find((bank) => (countsByBankId.get(bank.id) || 0) < 50) || null;
 
         if (!selectedBank) {
             return res.status(503).json({ message: 'Hiện tại các cổng nạp đều đạt giới hạn đơn trong tháng, vui lòng liên hệ Admin.' });

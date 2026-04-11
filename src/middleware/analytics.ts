@@ -1,11 +1,20 @@
-import { Request, Response, NextFunction } from 'express';
+import { Response, NextFunction } from 'express';
 import { db } from '../db/index.js';
 import { siteStats } from '../db/schema.js';
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
+import { getApiAuthToken } from '../services/tokenCache.js';
 
 export const analyticsMiddleware = async (req: any, res: Response, next: NextFunction) => {
-    // 1. Skip if it's an API tool request (already marked by authMiddleware if used)
-    if (req.isApiRequest) return next();
+    // 1. Require fixed API token from settings for analytics updates.
+    // Uses shared cache — no extra DB read if authMiddleware already fetched it.
+    const fixedApiToken = await getApiAuthToken();
+    if (!fixedApiToken) return next();
+
+    const authHeader = req.headers.authorization;
+    const requestToken = typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+        ? authHeader.slice(7)
+        : null;
+    if (requestToken !== fixedApiToken) return next();
 
     // 2. Skip if it's an admin path or common asset/internal path
     const path = req.path;
@@ -18,31 +27,19 @@ export const analyticsMiddleware = async (req: any, res: Response, next: NextFun
     const today = new Date().toISOString().split('T')[0];
 
     try {
-        // Ensure the row for today exists
-        const stats = await db.query.siteStats.findFirst({
-            where: eq(siteStats.date, today),
-        });
-
-        if (!stats) {
-            await db.insert(siteStats).values({
-                date: today,
-                visitors: 1,
-                pageViews: 1,
-            }).onConflictDoNothing();
-        } else {
-            // Increment logic
-            const updates: any = {
+        const visitorIncrement = hasVisitedToday ? 0 : 1;
+        // Single statement UPSERT avoids a pre-read per request.
+        await db.insert(siteStats).values({
+            date: today,
+            visitors: visitorIncrement,
+            pageViews: 1,
+        }).onConflictDoUpdate({
+            target: siteStats.date,
+            set: {
+                visitors: sql`${siteStats.visitors} + ${visitorIncrement}`,
                 pageViews: sql`${siteStats.pageViews} + 1`,
-            };
-
-            if (!hasVisitedToday) {
-                updates.visitors = sql`${siteStats.visitors} + 1`;
-            }
-
-            await db.update(siteStats)
-                .set(updates)
-                .where(eq(siteStats.date, today));
-        }
+            },
+        });
 
         // Set cookie if not present to mark UV for today
         if (!hasVisitedToday) {

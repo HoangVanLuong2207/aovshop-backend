@@ -301,15 +301,10 @@ router.post('/products/:id/accounts', async (req, res) => {
             .set({ stock: Number(remainingCount[0]?.count || 0) })
             .where(eq(products.id, productId));
 
-        const updatedAccounts = await db.query.productAccounts.findMany({
-            where: eq(productAccounts.productId, productId),
-            orderBy: desc(productAccounts.id),
-        });
-
         res.json({
             message: `Đã thêm ${accountList.length} tài khoản thành công`,
+            added: accountList.length,
             stock: Number(remainingCount[0]?.count || 0),
-            accounts: updatedAccounts
         });
     } catch (error) {
         console.error(error);

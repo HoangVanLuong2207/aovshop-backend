@@ -110,52 +110,42 @@ router.get('/products', async (req, res) => {
     try {
         const { category_id, search, sort, per_page = '12', page = '1' } = req.query;
 
-        const result = await db.query.products.findMany({
-            where: eq(products.active, true),
-            with: {
-                category: true,
-            },
-        });
-
-        // Mapping to JS objects for filtering
-        let mappedProducts = result.map(mapProduct);
-
-        // Filter by search
-        if (search) {
-            mappedProducts = mappedProducts.filter(p =>
-                p.name.toLowerCase().includes((search as string).toLowerCase())
-            );
-        }
-
-        // Filter by category
-        if (category_id) {
-            mappedProducts = mappedProducts.filter(p =>
-                p.category_id === parseInt(category_id as string)
-            );
-        }
-
-        // Sort
-        if (sort === 'price_asc') {
-            mappedProducts.sort((a, b) => (a.sale_price || a.price) - (b.sale_price || b.price));
-        } else if (sort === 'price_desc') {
-            mappedProducts.sort((a, b) => (b.sale_price || b.price) - (a.sale_price || a.price));
-        } else if (sort === 'newest') {
-            mappedProducts.sort((a, b) => b.id - a.id);
-        }
-
-        // Pagination
         const perPage = parseInt(per_page as string);
         const currentPage = parseInt(page as string);
-        const total = mappedProducts.length;
-        const paginatedProducts = mappedProducts.slice((currentPage - 1) * perPage, currentPage * perPage);
+        const offset = (currentPage - 1) * perPage;
+
+        // Build sort order
+        let orderByClause: any = desc(products.id);
+        if (sort === 'price_asc') orderByClause = asc(products.price);
+        else if (sort === 'price_desc') orderByClause = desc(products.price);
+
+        // Build where conditions
+        const conditions: any[] = [eq(products.active, true)];
+        if (category_id) conditions.push(eq(products.categoryId, parseInt(category_id as string)));
+        if (search) conditions.push(like(products.name, `%${search}%`));
+
+        // Get total count first
+        const [{ total }] = await db
+            .select({ total: sql<number>`count(*)` })
+            .from(products)
+            .where(and(...conditions));
+
+        // Fetch only the page we need
+        const result = await db.query.products.findMany({
+            where: and(...conditions),
+            with: { category: true },
+            orderBy: orderByClause,
+            limit: perPage,
+            offset,
+        });
 
         res.json({
-            data: paginatedProducts,
+            data: result.map(mapProduct),
             meta: {
                 current_page: currentPage,
                 per_page: perPage,
-                total,
-                last_page: Math.ceil(total / perPage),
+                total: Number(total),
+                last_page: Math.ceil(Number(total) / perPage),
             },
         });
     } catch (error) {
@@ -163,6 +153,7 @@ router.get('/products', async (req, res) => {
         res.status(500).json({ message: 'Lỗi server' });
     }
 });
+
 
 // Get featured products
 router.get('/products/featured', async (req, res) => {

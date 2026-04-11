@@ -1,8 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { db } from '../db/index.js';
-import { users, settings } from '../db/schema.js';
+import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
+import { getApiAuthToken } from '../services/tokenCache.js';
 
 export interface AuthRequest extends Request {
     user?: {
@@ -22,12 +23,9 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
 
         const token = authHeader.split(' ')[1];
 
-        // 1. Check if token is the Static API Token from Settings
-        const apiTokenSetting = await db.query.settings.findFirst({
-            where: eq(settings.key, 'api_auth_token'),
-        });
-
-        if (apiTokenSetting && apiTokenSetting.value === token) {
+        // 1. Check if token is the Static API Token from Settings (shared cache)
+        const apiToken = await getApiAuthToken();
+        if (apiToken && apiToken === token) {
             req.user = {
                 id: 0,
                 email: 'api@system',
