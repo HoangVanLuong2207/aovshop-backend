@@ -255,13 +255,9 @@ router.post('/products/:id/accounts', async (req, res) => {
 
         // Deduplicate within the uploaded list itself
         const accountList = [...new Set(rawAccountList)] as string[];
-        if (accountList.length < rawAccountList.length) {
-            return res.status(400).json({
-                message: `Phát hiện ${rawAccountList.length - accountList.length} tài khoản trùng lặp trong danh sách`
-            });
-        }
 
-        // Insert accounts — DB unique constraint on `data` will reject duplicates instantly
+        // Plain INSERT — no duplicate check, no reads.
+        // UNIQUE constraint on `data` is the safety net if a duplicate somehow arrives.
         const values = accountList.map((data: string) => ({
             productId,
             data,
@@ -287,13 +283,7 @@ router.post('/products/:id/accounts', async (req, res) => {
             added: accountList.length,
             stock: Number(remainingCount[0]?.count || 0),
         });
-    } catch (error: any) {
-        // Unique constraint violation — account already exists somewhere in the system
-        if (error?.message?.includes('UNIQUE constraint failed')) {
-            return res.status(400).json({
-                message: 'Tài khoản đã tồn tại trong hệ thống'
-            });
-        }
+    } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
     }
