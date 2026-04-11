@@ -5,6 +5,12 @@ import { sql } from 'drizzle-orm';
 import { getApiAuthToken } from '../services/tokenCache.js';
 
 export const analyticsMiddleware = async (req: any, res: Response, next: NextFunction) => {
+    // Skip immediately for health checks and static assets — no DB access at all
+    const path = req.path;
+    if (path === '/health' || path === '/' || path === '/api' || path.startsWith('/uploads') || path.startsWith('/static')) {
+        return next();
+    }
+
     // 1. Require fixed API token from settings for analytics updates.
     // Uses shared cache — no extra DB read if authMiddleware already fetched it.
     const fixedApiToken = await getApiAuthToken();
@@ -16,11 +22,11 @@ export const analyticsMiddleware = async (req: any, res: Response, next: NextFun
         : null;
     if (requestToken !== fixedApiToken) return next();
 
-    // 2. Skip if it's an admin path or common asset/internal path
-    const path = req.path;
-    if (path.startsWith('/api/admin') || path.startsWith('/uploads') || path.startsWith('/static')) {
+    // 2. Skip if it's an admin path
+    if (path.startsWith('/api/admin')) {
         return next();
     }
+
 
     // 3. Identification of Unique Visitors via a simple cookie (valid for 24h)
     const hasVisitedToday = req.cookies && req.cookies['_v_today'];
