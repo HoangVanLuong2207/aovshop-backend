@@ -142,7 +142,7 @@ export const productAccounts = sqliteTable('product_accounts', {
     id: integer('id').primaryKey({ autoIncrement: true }),
     productId: integer('product_id').references(() => products.id).notNull(),
     orderId: integer('order_id').references(() => orders.id), // Link to order when sold
-    data: text('data').notNull(), // user|pass|mail
+    data: text('data').notNull().unique(), // user|pass|mail — unique across all products
     status: text('status', { enum: ['available', 'sold'] }).default('available').notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),

@@ -253,34 +253,15 @@ router.post('/products/:id/accounts', async (req, res) => {
             return res.status(400).json({ message: 'Danh sách tài khoản trống' });
         }
 
-        // Check for duplicates within the uploaded list itself
+        // Deduplicate within the uploaded list itself
         const accountList = [...new Set(rawAccountList)] as string[];
         if (accountList.length < rawAccountList.length) {
-            const internalDuplicates = rawAccountList.filter((item: any, index: number) => rawAccountList.indexOf(item) !== index);
             return res.status(400).json({
-                message: `Phát hiện ${rawAccountList.length - accountList.length} tài khoản trùng lặp ngay trong danh sách dán vào: ${[...new Set(internalDuplicates)].join(', ')}`
+                message: `Phát hiện ${rawAccountList.length - accountList.length} tài khoản trùng lặp trong danh sách`
             });
         }
 
-        // Check for duplicates in database
-        const existingAccounts = await db.query.productAccounts.findMany({
-            where: inArray(productAccounts.data, accountList),
-            with: {
-                product: true
-            }
-        });
-
-        if (existingAccounts.length > 0) {
-            const duplicateInfo = existingAccounts.map((acc: any) =>
-                `"${acc.data}" đã tồn tại trong sản phẩm "${acc.product?.name}"`
-            ).join(', ');
-
-            return res.status(400).json({
-                message: `Phát hiện ${existingAccounts.length} tài khoản trùng lặp: ${duplicateInfo}`
-            });
-        }
-
-        // Insert accounts
+        // Insert accounts — DB unique constraint on `data` will reject duplicates instantly
         const values = accountList.map((data: string) => ({
             productId,
             data,
@@ -306,11 +287,18 @@ router.post('/products/:id/accounts', async (req, res) => {
             added: accountList.length,
             stock: Number(remainingCount[0]?.count || 0),
         });
-    } catch (error) {
+    } catch (error: any) {
+        // Unique constraint violation — account already exists somewhere in the system
+        if (error?.message?.includes('UNIQUE constraint failed')) {
+            return res.status(400).json({
+                message: 'Tài khoản đã tồn tại trong hệ thống'
+            });
+        }
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
     }
 });
+
 
 // Get accounts for a product
 router.get('/products/:id/accounts', async (req, res) => {
