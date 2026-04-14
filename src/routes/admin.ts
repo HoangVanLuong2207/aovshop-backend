@@ -290,16 +290,60 @@ router.post('/products/:id/accounts', async (req, res) => {
 });
 
 
-// Get accounts for a product
+// Get accounts for a product (paginated)
 router.get('/products/:id/accounts', async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(productAccounts)
+            .where(eq(productAccounts.productId, productId));
+        
+        const total = Number(countResult[0]?.count || 0);
+
         const result = await db.query.productAccounts.findMany({
             where: eq(productAccounts.productId, productId),
             orderBy: desc(productAccounts.id),
+            limit: limit,
+            offset: offset,
         });
 
-        res.json({ data: result });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Export unsold accounts
+router.get('/products/:id/accounts/export-unsold', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.id);
+        
+        const result = await db.query.productAccounts.findMany({
+            where: and(
+                eq(productAccounts.productId, productId),
+                eq(productAccounts.status, 'available')
+            ),
+            orderBy: desc(productAccounts.id),
+        });
+
+        const accountStr = result.map(acc => acc.data).join('\n');
+        
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Content-Disposition', `attachment; filename="unsold_accounts_${productId}.txt"`);
+        res.send(accountStr);
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
