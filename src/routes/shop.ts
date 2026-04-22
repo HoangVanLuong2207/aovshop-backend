@@ -72,6 +72,7 @@ const mapProduct = (p: any) => ({
     images: p.images || [],
     category_id: p.categoryId,
     active: p.active,
+    is_preorder: p.isPreorder || false,
     created_at: p.createdAt,
     category: p.category,
 });

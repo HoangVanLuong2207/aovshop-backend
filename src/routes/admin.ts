@@ -119,7 +119,7 @@ router.get('/products', async (req, res) => {
 
 router.post('/products', async (req, res) => {
     try {
-        const { category_id, name, description, price, sale_price, stock, image, active, images } = req.body;
+        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder } = req.body;
 
         const [product] = await db.insert(products).values({
             categoryId: category_id ? parseInt(category_id) : null,
@@ -130,6 +130,7 @@ router.post('/products', async (req, res) => {
             stock: stock ? parseInt(stock) : 0,
             image: image || null,
             active: active === '1' || active === 'true' || active === true,
+            isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
         }).returning();
 
         // Save gallery images
@@ -151,7 +152,7 @@ router.post('/products', async (req, res) => {
 
 const handleProductUpdate = async (req: any, res: any) => {
     try {
-        const { category_id, name, description, price, sale_price, stock, image, active, images } = req.body;
+        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder } = req.body;
         const productId = parseInt(req.params.id);
         const updateData: any = {
             categoryId: category_id ? parseInt(category_id) : null,
@@ -161,6 +162,7 @@ const handleProductUpdate = async (req: any, res: any) => {
             salePrice: sale_price ? parseFloat(sale_price) : null,
             stock: stock ? parseInt(stock) : 0,
             active: active === '1' || active === 'true' || active === true,
+            isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
         };
 
         if (image !== undefined) {
@@ -378,6 +380,54 @@ router.delete('/products/:productId/accounts/:accountId', async (req, res) => {
     }
 });
 
+// Bulk delete accounts
+router.post('/products/:productId/accounts/bulk-delete', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.productId);
+        const { ids } = req.body;
+
+        console.log(`[Admin] Bulk delete request for product ${productId}. IDs:`, ids);
+
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ message: 'Thiếu danh sách ID tài khoản' });
+        }
+
+        // Clean IDs to ensure they are valid numbers
+        const cleanIds = ids.map(id => parseInt(String(id))).filter(id => !isNaN(id));
+        
+        if (cleanIds.length === 0) {
+            return res.status(400).json({ message: 'Danh sách ID không hợp lệ' });
+        }
+
+        const deleteResult = await db.delete(productAccounts).where(
+            and(
+                eq(productAccounts.productId, productId),
+                inArray(productAccounts.id, cleanIds)
+            )
+        );
+
+        console.log(`[Admin] Successfully deleted accounts. Re-calculating stock...`);
+
+        // Update product stock
+        const remainingCount = await db.select({ count: sql`count(*)` })
+            .from(productAccounts)
+            .where(and(
+                eq(productAccounts.productId, productId),
+                eq(productAccounts.status, 'available')
+            ));
+
+        const newStock = Number(remainingCount[0]?.count || 0);
+        await db.update(products)
+            .set({ stock: newStock })
+            .where(eq(products.id, productId));
+
+        res.json({ message: `Đã xóa ${cleanIds.length} tài khoản thành công`, stock: newStock });
+    } catch (error) {
+        console.error('[Admin Bulk Delete Error]:', error);
+        res.status(500).json({ message: 'Lỗi server khi xóa hàng loạt', error: String(error) });
+    }
+});
+
 // Clear available accounts
 router.post('/products/:id/accounts/clear', async (req, res) => {
     try {
@@ -592,7 +642,7 @@ router.get('/orders/:id', async (req, res) => {
     try {
         const order = await db.query.orders.findFirst({
             where: eq(orders.id, parseInt(req.params.id)),
-            with: { user: true, items: true },
+            with: { user: true, items: true, accounts: true },
         });
         res.json(order);
     } catch (error) {
@@ -612,6 +662,66 @@ router.put('/orders/:id/status', async (req, res) => {
             where: eq(orders.id, parseInt(req.params.id)),
         });
         res.json(order);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Also support PATCH for status (used by frontend)
+router.patch('/orders/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body;
+        await db.update(orders)
+            .set({ status })
+            .where(eq(orders.id, parseInt(req.params.id)));
+
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, parseInt(req.params.id)),
+        });
+        res.json(order);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Deliver pre-order: admin fills delivery data and marks as delivered
+router.put('/orders/:id/deliver', async (req, res) => {
+    try {
+        const orderId = parseInt(req.params.id);
+        const { delivery_data } = req.body;
+
+        if (!delivery_data || !delivery_data.trim()) {
+            return res.status(400).json({ message: 'Vui lòng nhập nội dung giao hàng' });
+        }
+
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, orderId),
+        });
+
+        if (!order) {
+            return res.status(404).json({ message: 'Đơn hàng không tồn tại' });
+        }
+
+        if (order.orderType !== 'preorder') {
+            return res.status(400).json({ message: 'Đơn hàng này không phải pre-order' });
+        }
+
+        await db.update(orders)
+            .set({
+                deliveryData: delivery_data.trim(),
+                deliveredAt: new Date().toISOString(),
+                status: 'delivered' as any,
+            })
+            .where(eq(orders.id, orderId));
+
+        const updatedOrder = await db.query.orders.findFirst({
+            where: eq(orders.id, orderId),
+            with: { user: true, items: true },
+        });
+
+        res.json({ message: 'Giao hàng thành công', order: updatedOrder });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });

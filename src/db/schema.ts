@@ -41,6 +41,7 @@ export const products = sqliteTable('products', {
     soldCount: integer('sold_count').default(0).notNull(),
     image: text('image'),
     active: integer('active', { mode: 'boolean' }).default(true).notNull(),
+    isPreorder: integer('is_preorder', { mode: 'boolean' }).default(false).notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
@@ -68,12 +69,16 @@ export const promotions = sqliteTable('promotions', {
 export const orders = sqliteTable('orders', {
     id: integer('id').primaryKey({ autoIncrement: true }),
     userId: integer('user_id').references(() => users.id).notNull(),
-    status: text('status', { enum: ['pending', 'completed', 'cancelled'] }).default('pending').notNull(),
+    status: text('status', { enum: ['pending', 'completed', 'cancelled', 'waiting', 'delivered'] }).default('pending').notNull(),
+    orderType: text('order_type', { enum: ['instant', 'preorder'] }).default('instant').notNull(),
     subtotal: real('subtotal').notNull(),
     discount: real('discount').default(0),
     total: real('total').notNull(),
     promoCode: text('promo_code'),
     note: text('note'),
+    customerNote: text('customer_note'),
+    deliveryData: text('delivery_data'),
+    deliveredAt: text('delivered_at'),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 }, (table) => ({
@@ -141,7 +146,7 @@ export const deposits = sqliteTable('deposits', {
 export const productAccounts = sqliteTable('product_accounts', {
     id: integer('id').primaryKey({ autoIncrement: true }),
     productId: integer('product_id').references(() => products.id).notNull(),
-    orderId: integer('order_id').references(() => orders.id), // Link to order when sold
+    orderId: integer('order_id'), // Link to order when sold (no FK constraint to allow deletion)
     data: text('data').notNull(), // user|pass|mail
     status: text('status', { enum: ['available', 'sold'] }).default('available').notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),

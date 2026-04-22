@@ -166,17 +166,74 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
 router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { name, email } = req.body;
+        const userId = req.user!.id;
+
+        const currentUser = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+        });
+
+        if (!currentUser) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        let emailToUpdate = currentUser.email;
+        let emailVerified = currentUser.emailVerified;
+        let verificationToken = currentUser.verificationToken;
+        let verificationExpires = currentUser.verificationExpires;
+        let message = 'Cập nhật thành công';
+
+        if (email && email !== currentUser.email) {
+            // Only allow change if not verified
+            if (currentUser.emailVerified) {
+                return res.status(400).json({ message: 'Email đã được xác thực không thể thay đổi.' });
+            }
+
+            // Check if email already exists
+            const existingUser = await db.query.users.findFirst({
+                where: eq(users.email, email),
+            });
+
+            if (existingUser) {
+                return res.status(400).json({ message: 'Email đã được sử dụng bởi người khác' });
+            }
+
+            emailToUpdate = email;
+            // Generate new verification token
+            verificationToken = generateVerificationToken();
+            verificationExpires = getVerificationExpiry();
+            emailVerified = false;
+
+            // Send verification email to NEW address
+            const emailSent = await sendVerificationEmail({
+                to: email,
+                name: name || currentUser.name,
+                token: verificationToken,
+            });
+
+            if (!emailSent) {
+                console.error('Failed to send verification email to new address:', email);
+            }
+
+            message = 'Cập nhật thành công! Vui lòng kiểm tra email mới để xác thực.';
+        }
 
         await db.update(users)
-            .set({ name, email })
-            .where(eq(users.id, req.user!.id));
+            .set({ 
+                name, 
+                email: emailToUpdate,
+                emailVerified,
+                verificationToken,
+                verificationExpires,
+                updatedAt: new Date().toISOString()
+            })
+            .where(eq(users.id, userId));
 
         const user = await db.query.users.findFirst({
-            where: eq(users.id, req.user!.id),
+            where: eq(users.id, userId),
         });
 
         res.json({
-            message: 'Cập nhật thành công',
+            message,
             user: { id: user!.id, name: user!.name, email: user!.email, role: user!.role, balance: user!.balance, emailVerified: user!.emailVerified },
         });
     } catch (error) {

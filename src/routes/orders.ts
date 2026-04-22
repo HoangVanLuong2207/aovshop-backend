@@ -34,11 +34,15 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
         const mappedOrders = (userOrders as any[]).map(order => ({
             id: order.id,
             status: order.status,
+            order_type: order.orderType,
             subtotal: order.subtotal,
             discount: order.discount,
             total: order.total,
             promo_code: order.promoCode,
             note: order.note,
+            customer_note: order.customerNote,
+            delivery_data: order.deliveryData,
+            delivered_at: order.deliveredAt,
             created_at: order.createdAt,
             items: order.items.map((item: any) => ({
                 id: item.id,
@@ -124,7 +128,7 @@ router.get('/:id', authMiddleware, async (req: AuthRequest, res) => {
 // Create order (checkout)
 router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
     try {
-        const { items, promo_code, note } = req.body;
+        const { items, promo_code, note, customer_note } = req.body;
 
         // Get user
         const user = await db.query.users.findFirst({
@@ -139,6 +143,8 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
         let subtotal = 0;
         const orderProducts = [];
         const allTargetAccounts: any[] = [];
+        let hasPreorder = false;
+        let isAllPreorder = true;
 
         for (const item of items) {
             const product = await db.query.products.findFirst({
@@ -149,17 +155,24 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 return res.status(400).json({ message: `Sản phẩm không tồn tại` });
             }
 
-            // Fetch available accounts for this product
-            const availableAccounts = await db.query.productAccounts.findMany({
-                where: and(
-                    eq(productAccounts.productId, product.id),
-                    eq(productAccounts.status, 'available')
-                ),
-                limit: item.quantity,
-            });
+            if (product.isPreorder) {
+                hasPreorder = true;
+            } else {
+                isAllPreorder = false;
+                // Only check stock for non-preorder items
+                const availableAccounts = await db.query.productAccounts.findMany({
+                    where: and(
+                        eq(productAccounts.productId, product.id),
+                        eq(productAccounts.status, 'available')
+                    ),
+                    limit: item.quantity,
+                });
 
-            if (availableAccounts.length < item.quantity) {
-                return res.status(400).json({ message: `${product.name} không đủ số lượng tài khoản trong kho (còn lại: ${availableAccounts.length})` });
+                if (availableAccounts.length < item.quantity) {
+                    return res.status(400).json({ message: `${product.name} không đủ số lượng tài khoản trong kho (còn lại: ${availableAccounts.length})` });
+                }
+
+                allTargetAccounts.push(...availableAccounts);
             }
 
             const price = product.salePrice || product.price;
@@ -172,9 +185,14 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 price,
                 total: itemTotal,
             });
-
-            allTargetAccounts.push(...availableAccounts);
         }
+
+        // Mixed cart not allowed: all must be same type
+        if (hasPreorder && !isAllPreorder) {
+            return res.status(400).json({ message: 'Không thể kết hợp sản phẩm thường và sản phẩm pre-order trong cùng một đơn hàng' });
+        }
+
+        const orderType = hasPreorder ? 'preorder' : 'instant';
 
         // Apply promotion
         let discount = 0;
@@ -210,15 +228,20 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             return res.status(400).json({ message: 'Số dư không đủ' });
         }
 
+        // Determine initial status
+        const initialStatus = orderType === 'preorder' ? 'waiting' : 'completed';
+
         // Create order
         const [order] = await db.insert(orders).values({
             userId: user.id,
-            status: 'completed',
+            status: initialStatus as any,
+            orderType: orderType as any,
             subtotal,
             discount,
             total,
             promoCode: promo_code || null,
             note: note || null,
+            customerNote: customer_note || null,
             createdAt: new Date().toISOString(),
         }).returning();
 
@@ -233,40 +256,47 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 total: item.total,
             });
 
-            // Get accounts belonging to THIS product from our collected list
-            const productAccountsToLink = allTargetAccounts
-                .filter(acc => acc.productId === item.product.id)
-                .slice(0, item.quantity);
+            // Only manage accounts for instant (non-preorder) items
+            if (!item.product.isPreorder) {
+                const productAccountsToLink = allTargetAccounts
+                    .filter(acc => acc.productId === item.product.id)
+                    .slice(0, item.quantity);
 
-            if (productAccountsToLink.length > 0) {
-                const accountIds = productAccountsToLink.map(acc => acc.id);
+                if (productAccountsToLink.length > 0) {
+                    const accountIds = productAccountsToLink.map(acc => acc.id);
 
-                // Link accounts to order and mark as sold
-                await db.update(productAccounts)
+                    await db.update(productAccounts)
+                        .set({
+                            orderId: order.id,
+                            status: 'sold'
+                        })
+                        .where(inArray(productAccounts.id, accountIds));
+                }
+
+                const remainingCount = await db.select({ count: sql`count(*)` })
+                    .from(productAccounts)
+                    .where(and(
+                        eq(productAccounts.productId, item.product.id),
+                        eq(productAccounts.status, 'available')
+                    ));
+
+                await db.update(products)
                     .set({
-                        orderId: order.id,
-                        status: 'sold'
+                        stock: Number(remainingCount[0]?.count || 0),
+                        soldCount: sql`${products.soldCount} + ${item.quantity}`
                     })
-                    .where(inArray(productAccounts.id, accountIds));
+                    .where(eq(products.id, item.product.id));
+            } else {
+                // For preorder: just increment soldCount
+                await db.update(products)
+                    .set({
+                        soldCount: sql`${products.soldCount} + ${item.quantity}`
+                    })
+                    .where(eq(products.id, item.product.id));
             }
-
-            // Update stock (count of available accounts remaining)
-            const remainingCount = await db.select({ count: sql`count(*)` })
-                .from(productAccounts)
-                .where(and(
-                    eq(productAccounts.productId, item.product.id),
-                    eq(productAccounts.status, 'available')
-                ));
-
-            await db.update(products)
-                .set({
-                    stock: Number(remainingCount[0]?.count || 0),
-                    soldCount: sql`${products.soldCount} + ${item.quantity}`
-                })
-                .where(eq(products.id, item.product.id));
         }
 
-        // Update user balance
+        // Update user balance (charged immediately)
         const newBalance = user.balance - total;
         await db.update(users)
             .set({ balance: newBalance })
@@ -280,12 +310,16 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             balanceBefore: user.balance,
             balanceAfter: newBalance,
             status: 'completed',
-            description: `Thanh toán đơn hàng #${order.id}`,
+            description: orderType === 'preorder'
+                ? `Đặt hàng pre-order #${order.id}`
+                : `Thanh toán đơn hàng #${order.id}`,
             orderId: order.id,
         });
 
         res.json({
-            message: 'Thanh toán thành công',
+            message: orderType === 'preorder'
+                ? 'Đặt hàng thành công! Đơn hàng đang chờ hàng về.'
+                : 'Thanh toán thành công',
             order,
         });
     } catch (error) {
