@@ -397,7 +397,8 @@ router.post('/apply-promotion', authMiddleware, async (req: AuthRequest, res) =>
             }
 
             applicableSubtotal = items.reduce((sum: number, item: any) => {
-                const productId = parseInt(item.product_id);
+                const rawProductId = item.product_id ?? item.id;
+                const productId = parseInt(rawProductId);
                 if (!promoProductIds.includes(productId)) return sum;
                 const price = Number(item.sale_price || item.price || 0);
                 const quantity = Number(item.quantity || 0);
