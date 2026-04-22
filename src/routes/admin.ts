@@ -7,6 +7,25 @@ import { eq, desc, sql, and, inArray, gte, lte, like } from 'drizzle-orm';
 
 const router = Router();
 
+const mapPromotionResponse = (promo: any) => ({
+    id: promo.id,
+    code: promo.code,
+    name: promo.name,
+    description: promo.description,
+    type: promo.type,
+    value: promo.value,
+    min_order: promo.minOrder,
+    max_discount: promo.maxDiscount,
+    usage_limit: promo.usageLimit,
+    used_count: promo.usedCount,
+    applies_to_product_ids: promo.appliesToProductIds,
+    start_date: promo.startDate,
+    end_date: promo.endDate,
+    active: promo.active,
+    created_at: promo.createdAt,
+    updated_at: promo.updatedAt,
+});
+
 // Apply auth and admin middleware to all routes
 router.use(authMiddleware);
 router.use(adminMiddleware);
@@ -502,7 +521,7 @@ router.get('/promotions', async (req, res) => {
         const result = await db.query.promotions.findMany({
             orderBy: desc(promotions.id),
         });
-        res.json({ data: result });
+        res.json({ data: result.map(mapPromotionResponse) });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -529,7 +548,7 @@ router.post('/promotions', async (req, res) => {
             endDate: end_date || null,
             active: active === '1' || active === true,
         }).returning();
-        res.json(promo);
+        res.json(mapPromotionResponse(promo));
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -562,7 +581,7 @@ router.put('/promotions/:id', async (req, res) => {
         const promo = await db.query.promotions.findFirst({
             where: eq(promotions.id, parseInt(req.params.id)),
         });
-        res.json(promo);
+        res.json(promo ? mapPromotionResponse(promo) : null);
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
