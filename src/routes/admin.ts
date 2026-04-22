@@ -511,7 +511,10 @@ router.get('/promotions', async (req, res) => {
 
 router.post('/promotions', async (req, res) => {
     try {
-        const { code, name, description, type, value, min_order, max_discount, usage_limit, start_date, end_date, active } = req.body;
+        const { code, name, description, type, value, min_order, max_discount, usage_limit, start_date, end_date, active, applies_to_product_ids } = req.body;
+        const normalizedProductIds = Array.isArray(applies_to_product_ids)
+            ? applies_to_product_ids.map((id: any) => parseInt(id)).filter((id: number) => !Number.isNaN(id))
+            : [];
         const [promo] = await db.insert(promotions).values({
             code,
             name,
@@ -521,6 +524,7 @@ router.post('/promotions', async (req, res) => {
             minOrder: min_order ? parseFloat(min_order) : null,
             maxDiscount: max_discount ? parseFloat(max_discount) : null,
             usageLimit: usage_limit ? parseInt(usage_limit) : null,
+            appliesToProductIds: normalizedProductIds.length > 0 ? JSON.stringify(normalizedProductIds) : null,
             startDate: start_date || null,
             endDate: end_date || null,
             active: active === '1' || active === true,
@@ -534,7 +538,10 @@ router.post('/promotions', async (req, res) => {
 
 router.put('/promotions/:id', async (req, res) => {
     try {
-        const { code, name, description, type, value, min_order, max_discount, usage_limit, start_date, end_date, active } = req.body;
+        const { code, name, description, type, value, min_order, max_discount, usage_limit, start_date, end_date, active, applies_to_product_ids } = req.body;
+        const normalizedProductIds = Array.isArray(applies_to_product_ids)
+            ? applies_to_product_ids.map((id: any) => parseInt(id)).filter((id: number) => !Number.isNaN(id))
+            : [];
         await db.update(promotions)
             .set({
                 code,
@@ -545,6 +552,7 @@ router.put('/promotions/:id', async (req, res) => {
                 minOrder: min_order ? parseFloat(min_order) : null,
                 maxDiscount: max_discount ? parseFloat(max_discount) : null,
                 usageLimit: usage_limit ? parseInt(usage_limit) : null,
+                appliesToProductIds: normalizedProductIds.length > 0 ? JSON.stringify(normalizedProductIds) : null,
                 startDate: start_date || null,
                 endDate: end_date || null,
                 active: active === '1' || active === true,

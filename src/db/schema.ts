@@ -58,6 +58,7 @@ export const promotions = sqliteTable('promotions', {
     maxDiscount: real('max_discount'),
     usageLimit: integer('usage_limit'),
     usedCount: integer('used_count').default(0),
+    appliesToProductIds: text('applies_to_product_ids'),
     startDate: text('start_date'),
     endDate: text('end_date'),
     active: integer('active', { mode: 'boolean' }).default(true).notNull(),

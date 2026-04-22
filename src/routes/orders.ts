@@ -6,6 +6,45 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 
 const router = Router();
 
+const parsePromotionProductIds = (raw: string | null) => {
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return parsed
+            .map((id: any) => parseInt(id))
+            .filter((id: number) => !Number.isNaN(id));
+    } catch {
+        return [];
+    }
+};
+
+const getPromotionDiscount = (
+    promo: any,
+    subtotal: number,
+    applicableSubtotal: number,
+) => {
+    if (promo.minOrder && subtotal < promo.minOrder) {
+        return { valid: false, message: `Đơn hàng tối thiểu ${promo.minOrder.toLocaleString()}đ`, discount: 0 };
+    }
+
+    if (applicableSubtotal <= 0) {
+        return { valid: false, message: 'Mã giảm giá không áp dụng cho sản phẩm trong giỏ hàng', discount: 0 };
+    }
+
+    let discount = 0;
+    if (promo.type === 'percent') {
+        discount = (applicableSubtotal * promo.value) / 100;
+        if (promo.maxDiscount && discount > promo.maxDiscount) {
+            discount = promo.maxDiscount;
+        }
+    } else {
+        discount = Math.min(promo.value, applicableSubtotal);
+    }
+
+    return { valid: true, discount };
+};
+
 // Get user orders
 router.get('/', authMiddleware, async (req: AuthRequest, res) => {
     try {
@@ -145,6 +184,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
         const allTargetAccounts: any[] = [];
         let hasPreorder = false;
         let isAllPreorder = true;
+        const subtotalByProductId: Record<number, number> = {};
 
         for (const item of items) {
             const product = await db.query.products.findFirst({
@@ -178,6 +218,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             const price = product.salePrice || product.price;
             const itemTotal = price * item.quantity;
             subtotal += itemTotal;
+            subtotalByProductId[product.id] = (subtotalByProductId[product.id] || 0) + itemTotal;
 
             orderProducts.push({
                 product,
@@ -204,15 +245,18 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 ),
             });
 
-            if (promo && subtotal >= (promo.minOrder || 0)) {
-                if (promo.type === 'percent') {
-                    discount = (subtotal * promo.value) / 100;
-                    if (promo.maxDiscount && discount > promo.maxDiscount) {
-                        discount = promo.maxDiscount;
-                    }
-                } else {
-                    discount = promo.value;
+            if (promo) {
+                const promoProductIds = parsePromotionProductIds(promo.appliesToProductIds);
+                const applicableSubtotal = promoProductIds.length > 0
+                    ? promoProductIds.reduce((sum: number, productId: number) => sum + (subtotalByProductId[productId] || 0), 0)
+                    : subtotal;
+                const promoResult = getPromotionDiscount(promo, subtotal, applicableSubtotal);
+
+                if (!promoResult.valid) {
+                    return res.status(400).json({ message: promoResult.message });
                 }
+
+                discount = promoResult.discount;
 
                 // Update promo usage
                 await db.update(promotions)
@@ -331,7 +375,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
 // Validate promo code
 router.post('/apply-promotion', authMiddleware, async (req: AuthRequest, res) => {
     try {
-        const { code, subtotal } = req.body;
+        const { code, subtotal, items } = req.body;
 
         const promo = await db.query.promotions.findFirst({
             where: and(
@@ -344,23 +388,31 @@ router.post('/apply-promotion', authMiddleware, async (req: AuthRequest, res) =>
             return res.status(400).json({ message: 'Mã giảm giá không hợp lệ' });
         }
 
-        if (promo.minOrder && subtotal < promo.minOrder) {
-            return res.status(400).json({ message: `Đơn hàng tối thiểu ${promo.minOrder.toLocaleString()}đ` });
+        const promoProductIds = parsePromotionProductIds(promo.appliesToProductIds);
+        let applicableSubtotal = Number(subtotal) || 0;
+
+        if (promoProductIds.length > 0) {
+            if (!Array.isArray(items) || items.length === 0) {
+                return res.status(400).json({ message: 'Không đủ dữ liệu sản phẩm để áp mã giảm giá' });
+            }
+
+            applicableSubtotal = items.reduce((sum: number, item: any) => {
+                const productId = parseInt(item.product_id);
+                if (!promoProductIds.includes(productId)) return sum;
+                const price = Number(item.sale_price || item.price || 0);
+                const quantity = Number(item.quantity || 0);
+                return sum + (price * quantity);
+            }, 0);
         }
 
-        let discount = 0;
-        if (promo.type === 'percent') {
-            discount = (subtotal * promo.value) / 100;
-            if (promo.maxDiscount && discount > promo.maxDiscount) {
-                discount = promo.maxDiscount;
-            }
-        } else {
-            discount = promo.value;
+        const promoResult = getPromotionDiscount(promo, Number(subtotal) || 0, applicableSubtotal);
+        if (!promoResult.valid) {
+            return res.status(400).json({ message: promoResult.message });
         }
 
         res.json({
             valid: true,
-            discount,
+            discount: promoResult.discount,
             promotion: promo,
         });
     } catch (error) {
