@@ -602,9 +602,23 @@ router.delete('/promotions/:id', async (req, res) => {
 
 router.get('/orders', async (req, res) => {
     try {
+        const { status, type, per_page, limit: queryLimit } = req.query;
+        const conditions = [];
+
+        if (status) {
+            conditions.push(eq(orders.status, status as string));
+        }
+        if (type) {
+            conditions.push(eq(orders.orderType, type as string));
+        }
+
+        const limitCount = parseInt(per_page as string || queryLimit as string || '100');
+
         const result = await db.query.orders.findMany({
+            where: conditions.length > 0 ? and(...conditions) : undefined,
             with: { user: true, items: true },
             orderBy: desc(orders.id),
+            limit: limitCount
         });
         res.json({ data: result });
     } catch (error) {
@@ -759,9 +773,23 @@ router.put('/orders/:id/deliver', async (req, res) => {
 
 router.get('/transactions', async (req, res) => {
     try {
+        const { status, type, per_page, limit: queryLimit } = req.query;
+        const conditions = [];
+
+        if (status) {
+            conditions.push(eq(transactions.status, status as string));
+        }
+        if (type) {
+            conditions.push(eq(transactions.type, type as string));
+        }
+
+        const limitCount = parseInt(per_page as string || queryLimit as string || '100');
+
         const result = await db.query.transactions.findMany({
+            where: conditions.length > 0 ? and(...conditions) : undefined,
             with: { user: true },
             orderBy: desc(transactions.id),
+            limit: limitCount
         });
         res.json({ data: result });
     } catch (error) {

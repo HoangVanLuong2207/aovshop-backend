@@ -141,6 +141,7 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 // Start server
 app.listen(PORT, async () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`🌐 Network: http://10.83.75.247:${PORT}`);
 
     // Cleanup expired deposits on startup
     const expiredCount = await cleanupExpiredDeposits();
