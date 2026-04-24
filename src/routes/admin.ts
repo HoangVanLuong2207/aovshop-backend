@@ -606,10 +606,10 @@ router.get('/orders', async (req, res) => {
         const conditions = [];
 
         if (status) {
-            conditions.push(eq(orders.status, status as string));
+            conditions.push(eq(orders.status, status as any));
         }
         if (type) {
-            conditions.push(eq(orders.orderType, type as string));
+            conditions.push(eq(orders.orderType, type as any));
         }
 
         const limitCount = parseInt(per_page as string || queryLimit as string || '100');
@@ -777,10 +777,10 @@ router.get('/transactions', async (req, res) => {
         const conditions = [];
 
         if (status) {
-            conditions.push(eq(transactions.status, status as string));
+            conditions.push(eq(transactions.status, status as any));
         }
         if (type) {
-            conditions.push(eq(transactions.type, type as string));
+            conditions.push(eq(transactions.type, type as any));
         }
 
         const limitCount = parseInt(per_page as string || queryLimit as string || '100');
