@@ -1,8 +1,8 @@
 import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages, paymentAccounts } from '../db/schema.js';
-import { eq, desc, sql, and, inArray, gte, lte, like } from 'drizzle-orm';
+import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages, paymentAccounts, deposits } from '../db/schema.js';
+import { eq, desc, sql, and, inArray, gte, lte, like, lt } from 'drizzle-orm';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
 
@@ -36,9 +36,18 @@ router.use(adminMiddleware);
 
 router.get('/categories', async (req, res) => {
     try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const countResult = await db.select({ count: sql`count(*)` }).from(categories);
+        const total = Number(countResult[0]?.count || 0);
+
         const result = await db.query.categories.findMany({
             with: { products: true },
             orderBy: desc(categories.id),
+            limit,
+            offset,
         });
 
         const data = result.map(cat => ({
@@ -46,7 +55,15 @@ router.get('/categories', async (req, res) => {
             products_count: cat.products.length,
         }));
 
-        res.json({ data });
+        res.json({ 
+            data,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -55,9 +72,7 @@ router.get('/categories', async (req, res) => {
 
 router.get('/categories/all', async (req, res) => {
     try {
-        const result = await db.query.categories.findMany({
-            where: eq(categories.active, true),
-        });
+        const result = await db.query.categories.findMany();
         res.json(result);
     } catch (error) {
         console.error(error);
@@ -127,11 +142,46 @@ router.delete('/categories/:id', async (req, res) => {
 
 router.get('/products', async (req, res) => {
     try {
+        const { category_id, search, active } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const conditions = [];
+
+        if (category_id) {
+            conditions.push(eq(products.categoryId, parseInt(category_id as string)));
+        }
+        if (search) {
+            conditions.push(like(products.name, `%${search}%`));
+        }
+        if (active !== undefined && active !== '') {
+            conditions.push(eq(products.active, active === 'true' || active === '1'));
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(products)
+            .where(whereClause);
+        const total = Number(countResult[0]?.count || 0);
+
         const result = await db.query.products.findMany({
+            where: whereClause,
             with: { category: true, images: true },
             orderBy: desc(products.id),
+            limit,
+            offset,
         });
-        res.json({ data: result });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -522,10 +572,27 @@ router.get('/accounts/search', async (req, res) => {
 
 router.get('/promotions', async (req, res) => {
     try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const countResult = await db.select({ count: sql`count(*)` }).from(promotions);
+        const total = Number(countResult[0]?.count || 0);
+
         const result = await db.query.promotions.findMany({
             orderBy: desc(promotions.id),
+            limit,
+            offset,
         });
-        res.json({ data: result.map(mapPromotionResponse) });
+        res.json({ 
+            data: result.map(mapPromotionResponse),
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -606,7 +673,11 @@ router.delete('/promotions/:id', async (req, res) => {
 
 router.get('/orders', async (req, res) => {
     try {
-        const { status, type, per_page, limit: queryLimit } = req.query;
+        const { status, type, q } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string || req.query.per_page as string) || 20;
+        const offset = (page - 1) * limit;
+
         const conditions = [];
 
         if (status) {
@@ -615,16 +686,34 @@ router.get('/orders', async (req, res) => {
         if (type) {
             conditions.push(eq(orders.orderType, type as any));
         }
+        if (q) {
+            conditions.push(sql`${orders.id} = ${parseInt(q as string)}`);
+        }
 
-        const limitCount = parseInt(per_page as string || queryLimit as string || '100');
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(orders)
+            .where(whereClause);
+        
+        const total = Number(countResult[0]?.count || 0);
 
         const result = await db.query.orders.findMany({
-            where: conditions.length > 0 ? and(...conditions) : undefined,
+            where: whereClause,
             with: { user: true, items: true },
             orderBy: desc(orders.id),
-            limit: limitCount
+            limit,
+            offset,
         });
-        res.json({ data: result });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -777,7 +866,11 @@ router.put('/orders/:id/deliver', async (req, res) => {
 
 router.get('/transactions', async (req, res) => {
     try {
-        const { status, type, per_page, limit: queryLimit } = req.query;
+        const { status, type } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string || req.query.per_page as string) || 20;
+        const offset = (page - 1) * limit;
+
         const conditions = [];
 
         if (status) {
@@ -787,15 +880,30 @@ router.get('/transactions', async (req, res) => {
             conditions.push(eq(transactions.type, type as any));
         }
 
-        const limitCount = parseInt(per_page as string || queryLimit as string || '100');
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(transactions)
+            .where(whereClause);
+        
+        const total = Number(countResult[0]?.count || 0);
 
         const result = await db.query.transactions.findMany({
-            where: conditions.length > 0 ? and(...conditions) : undefined,
+            where: whereClause,
             with: { user: true },
             orderBy: desc(transactions.id),
-            limit: limitCount
+            limit,
+            offset,
         });
-        res.json({ data: result });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -849,6 +957,120 @@ router.get('/transactions/statistics', async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== DEPOSITS (Bank Requests) ====================
+
+// Get all deposits (with filtering)
+router.get('/deposits', async (req, res) => {
+    try {
+        const { status, q } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string || req.query.per_page as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const conditions = [];
+
+        if (status) {
+            conditions.push(eq(deposits.status, status as any));
+        }
+        
+        if (q) {
+            conditions.push(like(deposits.reference, `%${q}%`));
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(deposits)
+            .where(whereClause);
+        
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.deposits.findMany({
+            where: whereClause,
+            with: { user: true, bank: true },
+            orderBy: desc(deposits.id),
+            limit,
+            offset,
+        });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Clear junk deposits (pending/expired)
+router.delete('/deposits/junk', async (req, res) => {
+    try {
+        const result = await db.delete(deposits)
+            .where(
+                inArray(deposits.status, ['pending', 'expired'])
+            )
+            .returning({ id: deposits.id });
+        
+        res.json({ message: `Đã xóa ${result.length} đơn nạp rác`, count: result.length });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Manually approve deposit
+router.post('/deposits/:id/approve', async (req, res) => {
+    try {
+        const depositId = parseInt(req.params.id);
+        
+        await db.transaction(async (tx) => {
+            const deposit = await tx.query.deposits.findFirst({
+                where: eq(deposits.id, depositId),
+                with: { user: true }
+            });
+
+            if (!deposit) throw new Error('Không tìm thấy đơn nạp');
+            if (deposit.status === 'completed') throw new Error('Đơn nạp đã hoàn thành trước đó');
+
+            const user = deposit.user;
+            const amount = deposit.amount;
+            const currentBalance = user.balance || 0;
+            const newBalance = currentBalance + amount;
+
+            // Update user balance
+            await tx.update(users).set({ balance: newBalance }).where(eq(users.id, user.id));
+
+            // Update deposit status
+            await tx.update(deposits).set({ 
+                status: 'completed',
+                updatedAt: new Date().toISOString()
+            }).where(eq(deposits.id, deposit.id));
+
+            // Create transaction
+            await tx.insert(transactions).values({
+                userId: user.id,
+                type: 'deposit',
+                amount,
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                status: 'completed',
+                description: `Duyệt nạp tiền thủ công bởi Admin (Đơn #${deposit.id})`,
+                reference: deposit.reference,
+            });
+        });
+
+        res.json({ message: 'Đã duyệt đơn nạp thành công' });
+    } catch (error: any) {
+        console.error(error);
+        res.status(400).json({ message: error.message || 'Lỗi server' });
     }
 });
 
@@ -1084,8 +1306,17 @@ router.delete('/payment-accounts/:id', async (req, res) => {
 
 router.get('/users', async (req, res) => {
     try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const countResult = await db.select({ count: sql`count(*)` }).from(users);
+        const total = Number(countResult[0]?.count || 0);
+
         const result = await db.query.users.findMany({
             orderBy: desc(users.id),
+            limit,
+            offset,
         });
 
         // Remove password from response
@@ -1098,7 +1329,31 @@ router.get('/users', async (req, res) => {
             createdAt: u.createdAt,
         }));
 
-        res.json({ data: safeUsers });
+        res.json({ 
+            data: safeUsers,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Get user specific transactions (Balance fluctuations)
+router.get('/users/:id/transactions', async (req, res) => {
+    try {
+        const userId = parseInt(req.params.id);
+        const result = await db.query.transactions.findMany({
+            where: eq(transactions.userId, userId),
+            orderBy: desc(transactions.id),
+            limit: 100
+        });
+        res.json({ data: result });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
