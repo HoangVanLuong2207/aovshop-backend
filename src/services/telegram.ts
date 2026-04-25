@@ -1,13 +1,18 @@
+import { db } from '../db/index.js';
+
 export const TelegramService = {
     sendMessage: async (message: string) => {
-        const token = process.env.TELEGRAM_BOT_TOKEN;
-        const chatId = process.env.TELEGRAM_CHAT_ID;
-
-        if (!token || !chatId) {
-            return; // Skip silently if not configured
-        }
-
         try {
+            const dbSettings = await db.query.settings.findMany();
+            const config = Object.fromEntries(dbSettings.map(s => [s.key, s.value]));
+
+            const token = config.telegram_bot_token || process.env.TELEGRAM_BOT_TOKEN;
+            const chatId = config.telegram_chat_id || process.env.TELEGRAM_CHAT_ID;
+
+            if (!token || !chatId) {
+                return; // Skip silently if not configured
+            }
+
             const url = `https://api.telegram.org/bot${token}/sendMessage`;
             const response = await fetch(url, {
                 method: 'POST',
