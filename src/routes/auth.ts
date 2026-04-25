@@ -6,6 +6,7 @@ import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
+import { TelegramService } from '../services/telegram.js';
 
 const router = Router();
 
@@ -53,6 +54,14 @@ router.post('/register', async (req, res) => {
 
         if (!emailSent) {
             console.error('Failed to send verification email');
+        }
+
+        // Notify Admin via Telegram
+        try {
+            const telegramMsg = `🔔 <b>NGƯỜI DÙNG MỚI</b>\n\n👤 Tên: <b>${TelegramService.escapeHtml(name)}</b>\n📧 Email: <b>${TelegramService.escapeHtml(email)}</b>\n📅 Thời gian: ${new Date().toLocaleString('vi-VN')}`;
+            await TelegramService.sendMessage(telegramMsg);
+        } catch (err) {
+            console.error('[Telegram Notify Error]:', err);
         }
 
         // Generate token for immediate login

@@ -381,7 +381,10 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
 
         // 2. Telegram Notification
         try {
-            const telegramMsg = `🛒 <b>ĐƠN HÀNG ${orderLabel}</b>\n\n👤 Khách hàng: <b>${escapedUserName}</b>\n📦 Đơn hàng: #${order.id}\n💰 Tổng tiền: <b>${formattedTotal}đ</b>\n🔗 Xem chi tiết trên trang Admin.`;
+            const productList = orderProducts.map(p => `- ${p.product.name} (x${p.quantity})`).join('\n');
+            const noteContent = note ? `\n📝 <b>Thông tin khách nhập:</b>\n<i>${TelegramService.escapeHtml(note)}</i>\n` : '';
+            
+            const telegramMsg = `🛒 <b>ĐƠN HÀNG ${orderLabel}</b>\n\n👤 Khách hàng: <b>${escapedUserName}</b>\n📦 Đơn hàng: #${order.id}\n💰 Tổng tiền: <b>${formattedTotal}đ</b>${noteContent}\n🛍️ <b>Sản phẩm:</b>\n${productList}\n\n🔗 Xem chi tiết trên trang Admin.`;
             await TelegramService.sendMessage(telegramMsg);
         } catch (err) {
             console.error('[Telegram Notify Error]:', err);

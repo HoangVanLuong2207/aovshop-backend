@@ -109,6 +109,7 @@ const mapProduct = (p: any) => ({
     category_id: p.categoryId,
     active: p.active,
     is_preorder: p.isPreorder || false,
+    preorder_placeholder: p.preorderPlaceholder,
     created_at: p.createdAt,
     category: p.category,
 });
