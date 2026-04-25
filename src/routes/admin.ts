@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages, paymentAccounts } from '../db/schema.js';
 import { eq, desc, sql, and, inArray, gte, lte, like } from 'drizzle-orm';
+import { PushService } from '../services/push.js';
 
 
 const router = Router();
@@ -150,6 +151,7 @@ router.post('/products', async (req, res) => {
             image: image || null,
             active: active === '1' || active === 'true' || active === true,
             isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
+            preorderPlaceholder: req.body.preorder_placeholder || null,
         }).returning();
 
         // Save gallery images
@@ -182,6 +184,7 @@ const handleProductUpdate = async (req: any, res: any) => {
             stock: stock ? parseInt(stock) : 0,
             active: active === '1' || active === 'true' || active === true,
             isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
+            preorderPlaceholder: req.body.preorder_placeholder !== undefined ? req.body.preorder_placeholder : undefined,
         };
 
         if (image !== undefined) {
@@ -1218,6 +1221,21 @@ router.delete('/users/:id', async (req: AuthRequest, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Web Push - Test Notification
+router.post('/test-push', adminMiddleware, async (req: AuthRequest, res) => {
+    try {
+        await PushService.notifyAdmin({
+            title: '🔔 Thông báo thử nghiệm',
+            body: 'Nếu bạn thấy dòng này, hệ thống thông báo đẩy đã hoạt động!',
+            icon: '/logo.png',
+            data: { url: '/admin' }
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false });
     }
 });
 

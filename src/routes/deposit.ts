@@ -3,6 +3,7 @@ import { db } from '../db/index.js';
 import { settings, deposits, users, transactions, paymentAccounts } from '../db/schema.js';
 import { eq, and, lt, sql, inArray } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { PushService } from '../services/push.js';
 
 const router = Router();
 
@@ -212,6 +213,22 @@ router.post('/webhook', async (req, res) => {
 
         if (result.duplicate) return res.json({ success: true, message: 'Already processed' });
         if (result.error) return res.json({ success: false, message: result.error });
+
+        // Notify Admin via Web Push
+        try {
+            const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+            const deposit = await db.query.deposits.findFirst({ where: eq(deposits.reference, match[0]) });
+            if (user && deposit) {
+                await PushService.notifyAdmin({
+                    title: '💰 Tiền về! Tiền về!',
+                    body: `${user.name} vừa nạp ${new Intl.NumberFormat('vi-VN').format(deposit.amount)}đ`,
+                    icon: '/logo.png',
+                    data: { url: `/admin/transactions` }
+                });
+            }
+        } catch (err) {
+            console.error('[Push Notify Error]:', err);
+        }
 
         res.json({ success: true });
     } catch (error) {

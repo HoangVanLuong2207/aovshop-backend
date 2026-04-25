@@ -3,6 +3,7 @@ import { db } from '../db/index.js';
 import { orders, orderItems, products, users, transactions, promotions, productAccounts } from '../db/schema.js';
 import { eq, desc, and, gte, lte, inArray, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { PushService } from '../services/push.js';
 
 const router = Router();
 
@@ -359,6 +360,18 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 : `Thanh toán đơn hàng #${order.id}`,
             orderId: order.id,
         });
+
+        // Notify Admin via Web Push
+        try {
+            await PushService.notifyAdmin({
+                title: '🛒 Đơn hàng mới!',
+                body: `${user.name} vừa đặt đơn hàng #${order.id} (${new Intl.NumberFormat('vi-VN').format(order.total)}đ)`,
+                icon: '/logo.png',
+                data: { url: `/admin/orders` }
+            });
+        } catch (err) {
+            console.error('[Push Notify Error]:', err);
+        }
 
         res.json({
             message: orderType === 'preorder'

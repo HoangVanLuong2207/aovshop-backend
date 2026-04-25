@@ -17,6 +17,11 @@ async function main() {
         execSync('npx drizzle-kit push', { stdio: 'inherit' });
         console.log('✅ Database migrations completed!');
 
+        // Run push notification migration (adds VAPID keys if missing)
+        console.log('🔔 Checking push notification settings...');
+        execSync('npx tsx src/db/migrate-push.ts', { stdio: 'inherit' });
+        console.log('✅ Push notification settings verified!');
+
         // Check if we need to seed
         console.log('🌱 Checking if database needs seeding...');
         const client = createClient({

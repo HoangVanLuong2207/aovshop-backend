@@ -42,6 +42,7 @@ export const products = sqliteTable('products', {
     image: text('image'),
     active: integer('active', { mode: 'boolean' }).default(true).notNull(),
     isPreorder: integer('is_preorder', { mode: 'boolean' }).default(false).notNull(),
+    preorderPlaceholder: text('preorder_placeholder'),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });
@@ -269,4 +270,15 @@ export const depositsRelations = relations(deposits, ({ one }) => ({
         references: [paymentAccounts.id],
     }),
 }));
+
+// Push Notifications Subscriptions
+export const pushSubscriptions = sqliteTable('push_subscriptions', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id').references(() => users.id),
+    endpoint: text('endpoint').notNull().unique(),
+    p256dh: text('p256dh').notNull(),
+    auth: text('auth').notNull(),
+    userAgent: text('user_agent'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+});
 

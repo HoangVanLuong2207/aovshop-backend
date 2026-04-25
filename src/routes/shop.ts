@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { db } from '../db/index.js';
 import { categories, products, settings, orders } from '../db/schema.js';
 import { eq, and, like, desc, asc, sql, isNotNull } from 'drizzle-orm';
+import { authMiddleware, AuthRequest } from '../middleware/auth.js';
+import { PushService } from '../services/push.js';
 
 const router = Router();
 
@@ -56,6 +58,40 @@ router.get('/notification', async (req, res) => {
     } catch (error) {
         console.error(error);
         res.json({ enabled: false });
+    }
+});
+
+// Web Push - Get Public Key
+router.get('/push/public-key', async (req, res) => {
+    try {
+        const key = await db.query.settings.findFirst({
+            where: eq(settings.key, 'vapid_public_key'),
+        });
+        res.json({ publicKey: key?.value });
+    } catch (error) {
+        res.status(500).json({ message: 'Error' });
+    }
+});
+
+// Web Push - Subscribe
+router.post('/push/subscribe', async (req: any, res) => {
+    try {
+        const { subscription } = req.body;
+        const success = await PushService.subscribe(null, subscription, req.headers['user-agent']);
+        res.json({ success });
+    } catch (error) {
+        res.status(500).json({ success: false });
+    }
+});
+
+// Web Push - Subscribe (Authenticated)
+router.post('/push/subscribe-auth', authMiddleware, async (req: AuthRequest, res) => {
+    try {
+        const { subscription } = req.body;
+        const success = await PushService.subscribe(req.user!.id, subscription, req.headers['user-agent']);
+        res.json({ success });
+    } catch (error) {
+        res.status(500).json({ success: false });
     }
 });
 
