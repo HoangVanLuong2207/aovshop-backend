@@ -4,6 +4,7 @@ import { settings, deposits, users, transactions, paymentAccounts } from '../db/
 import { eq, and, lt, sql, inArray } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
+import { TelegramService } from '../services/telegram.js';
 
 const router = Router();
 
@@ -225,6 +226,7 @@ router.post('/webhook', async (req, res) => {
                     icon: '/logo.png',
                     data: { url: `/admin/transactions` }
                 });
+                await TelegramService.sendMessage(`💰 <b>TIỀN VỀ!</b>\n\n👤 Khách hàng: <b>${user.name}</b>\n💵 Số tiền nạp: <b>${new Intl.NumberFormat('vi-VN').format(deposit.amount)}đ</b>\n🔗 Xem chi tiết trên trang Admin.`);
             }
         } catch (err) {
             console.error('[Push Notify Error]:', err);

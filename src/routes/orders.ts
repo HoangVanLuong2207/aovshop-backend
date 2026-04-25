@@ -4,6 +4,7 @@ import { orders, orderItems, products, users, transactions, promotions, productA
 import { eq, desc, and, gte, lte, inArray, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
+import { TelegramService } from '../services/telegram.js';
 
 const router = Router();
 
@@ -369,6 +370,8 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 icon: '/logo.png',
                 data: { url: `/admin/orders` }
             });
+            await TelegramService.sendMessage(`🛒 <b>ĐƠN HÀNG MỚI</b>\n\n👤 Khách hàng: <b>${user.name}</b>\n📦 Đơn hàng: #${order.id}\n💰 Tổng tiền: <b>${new Intl.NumberFormat('vi-VN').format(order.total)}đ</b>\n🔗 Xem chi tiết trên trang Admin.`);
+
         } catch (err) {
             console.error('[Push Notify Error]:', err);
         }

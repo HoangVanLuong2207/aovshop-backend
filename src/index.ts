@@ -111,6 +111,11 @@ app.get('/health', (req, res) => {
     res.send('ok');
 });
 
+// Health check for frontend traffic ping
+app.get('/api/health', (req, res) => {
+    res.send('ok');
+});
+
 // Routes with specific rate limits
 app.use('/api/auth', authLimiter, authRoutes); // 5 req/min - prevent brute force
 app.use('/api/shop', shopRoutes); // Uses general limit (100 req/min)
