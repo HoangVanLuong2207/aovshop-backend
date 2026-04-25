@@ -1,6 +1,17 @@
 import { db } from '../db/index.js';
 
 export const TelegramService = {
+    /**
+     * Escape special characters for Telegram HTML mode
+     */
+    escapeHtml: (text: string) => {
+        if (!text) return '';
+        return text
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    },
+
     sendMessage: async (message: string) => {
         try {
             const dbSettings = await db.query.settings.findMany();
@@ -10,7 +21,8 @@ export const TelegramService = {
             const chatId = config.telegram_chat_id || process.env.TELEGRAM_CHAT_ID;
 
             if (!token || !chatId) {
-                return; // Skip silently if not configured
+                console.log('[Telegram] Skipping notification: Token or ChatID not configured.');
+                return;
             }
 
             const url = `https://api.telegram.org/bot${token}/sendMessage`;

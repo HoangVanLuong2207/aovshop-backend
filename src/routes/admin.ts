@@ -1239,4 +1239,14 @@ router.post('/test-push', adminMiddleware, async (req: AuthRequest, res) => {
     }
 });
 
+// Telegram - Test Notification
+router.post('/test-telegram', adminMiddleware, async (req: AuthRequest, res) => {
+    try {
+        await TelegramService.sendMessage('🔔 <b>THÔNG BÁO THỬ NGHIỆM</b>\n\nNếu bạn thấy tin nhắn này, hệ thống Telegram Bot đã hoạt động chính xác!');
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false });
+    }
+});
+
 export default router;

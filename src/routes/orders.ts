@@ -362,18 +362,29 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             orderId: order.id,
         });
 
-        // Notify Admin via Web Push
+        // Notify Admin
+        const orderLabel = orderType === 'preorder' ? 'PRE-ORDER' : 'MỚI';
+        const escapedUserName = TelegramService.escapeHtml(user.name);
+        const formattedTotal = new Intl.NumberFormat('vi-VN').format(order.total);
+
+        // 1. Web Push Notification
         try {
             await PushService.notifyAdmin({
-                title: '🛒 Đơn hàng mới!',
-                body: `${user.name} vừa đặt đơn hàng #${order.id} (${new Intl.NumberFormat('vi-VN').format(order.total)}đ)`,
+                title: `🛒 Đơn hàng ${orderLabel}!`,
+                body: `${user.name} vừa đặt đơn hàng #${order.id} (${formattedTotal}đ)`,
                 icon: '/logo.png',
                 data: { url: `/admin/orders` }
             });
-            await TelegramService.sendMessage(`🛒 <b>ĐƠN HÀNG MỚI</b>\n\n👤 Khách hàng: <b>${user.name}</b>\n📦 Đơn hàng: #${order.id}\n💰 Tổng tiền: <b>${new Intl.NumberFormat('vi-VN').format(order.total)}đ</b>\n🔗 Xem chi tiết trên trang Admin.`);
-
         } catch (err) {
             console.error('[Push Notify Error]:', err);
+        }
+
+        // 2. Telegram Notification
+        try {
+            const telegramMsg = `🛒 <b>ĐƠN HÀNG ${orderLabel}</b>\n\n👤 Khách hàng: <b>${escapedUserName}</b>\n📦 Đơn hàng: #${order.id}\n💰 Tổng tiền: <b>${formattedTotal}đ</b>\n🔗 Xem chi tiết trên trang Admin.`;
+            await TelegramService.sendMessage(telegramMsg);
+        } catch (err) {
+            console.error('[Telegram Notify Error]:', err);
         }
 
         res.json({
