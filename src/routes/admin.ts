@@ -4,6 +4,7 @@ import { db } from '../db/index.js';
 import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages, paymentAccounts } from '../db/schema.js';
 import { eq, desc, sql, and, inArray, gte, lte, like } from 'drizzle-orm';
 import { PushService } from '../services/push.js';
+import { TelegramService } from '../services/telegram.js';
 
 
 const router = Router();
