@@ -12,9 +12,9 @@ async function main() {
     }
 
     try {
-        // Run database migrations
+        // Run database migrations (--accept-data-loss prevents interactive prompt on Render)
         console.log('📦 Running database migrations...');
-        execSync('npx drizzle-kit push', { stdio: 'inherit' });
+        execSync('npx drizzle-kit push --accept-data-loss', { stdio: 'inherit' });
         console.log('✅ Database migrations completed!');
 
         // Run push notification migration (adds VAPID keys if missing)
@@ -49,7 +49,7 @@ async function main() {
         // If db:push fails on first run (table doesn't exist), try anyway
         if (error.message?.includes('no such table')) {
             console.log('📦 First run detected, running migrations...');
-            execSync('npx drizzle-kit push', { stdio: 'inherit' });
+            execSync('npx drizzle-kit push --accept-data-loss', { stdio: 'inherit' });
             execSync('npx tsx src/db/seed.ts', { stdio: 'inherit' });
             await import('./dist/index.js');
         } else {
