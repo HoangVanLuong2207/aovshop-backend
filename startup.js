@@ -4,6 +4,7 @@ import { createClient } from '@libsql/client';
 
 async function main() {
     console.log('🚀 Starting AOVShop Backend...');
+    console.log('🔍 DEBUG: Migration mode set to --force');
 
     // Check if database URL is configured
     if (!process.env.TURSO_DATABASE_URL) {
