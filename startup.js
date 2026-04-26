@@ -4,7 +4,7 @@ import { createClient } from '@libsql/client';
 
 async function main() {
     console.log('🚀 Starting AOVShop Backend...');
-    console.log('🔍 DEBUG: Migration mode set to --force');
+    console.log('🔍 DEBUG v2: Migration mode set to --force (no --accept-data-loss)');
 
     // Check if database URL is configured
     if (!process.env.TURSO_DATABASE_URL) {
@@ -13,7 +13,7 @@ async function main() {
     }
 
     try {
-        // Run database migrations (--accept-data-loss prevents interactive prompt on Render)
+        // Run database migrations (--force skips interactive prompts on Render)
         console.log('📦 Running database migrations...');
         execSync('npx drizzle-kit push --force', { stdio: 'inherit' });
         console.log('✅ Database migrations completed!');
