@@ -49,8 +49,7 @@ router.get('/banks', async (req, res) => {
         // Count once for all active banks instead of N queries.
         const countsByBankId = await getCurrentMonthDepositCountsByBank(banks.map((b) => b.id));
         const availableBanks = banks
-            .map((bank) => ({ ...bank, currentMonthCount: countsByBankId.get(bank.id) || 0 }))
-            .filter((bank) => bank.currentMonthCount < 50);
+            .map((bank) => ({ ...bank, currentMonthCount: countsByBankId.get(bank.id) || 0 }));
 
         res.json(availableBanks);
     } catch (error) {
@@ -110,10 +109,25 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
         });
 
         const countsByBankId = await getCurrentMonthDepositCountsByBank(allActiveBanks.map((b) => b.id));
-        const selectedBank = allActiveBanks.find((bank) => (countsByBankId.get(bank.id) || 0) < 50) || null;
+        
+        const banksWithStats = allActiveBanks.map(bank => {
+            const count = countsByBankId.get(bank.id) || 0;
+            return {
+                ...bank,
+                count,
+                cycle: Math.floor(count / 50)
+            };
+        });
+
+        banksWithStats.sort((a, b) => {
+            if (a.cycle !== b.cycle) return a.cycle - b.cycle;
+            return a.count - b.count;
+        });
+
+        const selectedBank = banksWithStats.length > 0 ? banksWithStats[0] : null;
 
         if (!selectedBank) {
-            return res.status(503).json({ message: 'Hiện tại các cổng nạp đều đạt giới hạn đơn trong tháng, vui lòng liên hệ Admin.' });
+            return res.status(503).json({ message: 'Không có cổng thanh toán nào hoạt động.' });
         }
 
         // Generate transfer content: NAP + timestamp + U + UserID
