@@ -339,7 +339,17 @@ router.post('/products/:id/accounts', async (req, res) => {
             status: 'available' as const,
         }));
 
-        await db.insert(productAccounts).values(values);
+        // Chunk insertion to avoid hitting SQLite/LibSQL variables limit (max 999 or 32766 parameters)
+        // Uses db.batch() to send all insert queries in a single HTTP request to Turso database
+        const BATCH_SIZE = 250;
+        const batchQueries = [];
+        for (let i = 0; i < values.length; i += BATCH_SIZE) {
+            const batch = values.slice(i, i + BATCH_SIZE);
+            batchQueries.push(db.insert(productAccounts).values(batch));
+        }
+        if (batchQueries.length > 0) {
+            await db.batch(batchQueries as [any, ...any[]]);
+        }
 
         // Update product stock
         const remainingCount = await db.select({ count: sql`count(*)` })
