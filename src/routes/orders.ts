@@ -235,6 +235,49 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             return res.status(400).json({ message: 'Không thể kết hợp sản phẩm thường và sản phẩm pre-order trong cùng một đơn hàng' });
         }
 
+        // === Daily buy limit check ===
+        // Calculate today's date range in VN timezone (UTC+7)
+        const nowVN = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+        const todayStartVN = new Date(Date.UTC(
+            nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate(),
+            -7, 0, 0, 0 // 00:00:00 VN = -7h UTC
+        ));
+        const todayEndVN = new Date(Date.UTC(
+            nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate(),
+            -7 + 23, 59, 59, 999 // 23:59:59 VN
+        ));
+        const todayStartISO = todayStartVN.toISOString();
+        const todayEndISO = todayEndVN.toISOString();
+
+        for (const item of orderProducts) {
+            const limit = item.product.dailyBuyLimit;
+            if (limit && limit > 0) {
+                // Count how many of this product the user already bought today (excluding cancelled)
+                const purchasedResult = await db.select({
+                    total: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)`
+                })
+                .from(orderItems)
+                .innerJoin(orders, eq(orderItems.orderId, orders.id))
+                .where(and(
+                    eq(orders.userId, req.user!.id),
+                    eq(orderItems.productId, item.product.id),
+                    gte(orders.createdAt, todayStartISO),
+                    lte(orders.createdAt, todayEndISO),
+                    sql`${orders.status} != 'cancelled'`
+                ));
+
+                const purchasedToday = Number(purchasedResult[0]?.total || 0);
+                const remaining = limit - purchasedToday;
+
+                if (item.quantity > remaining) {
+                    const msg = purchasedToday > 0
+                        ? `Sản phẩm "${item.product.name}" giới hạn mua ${limit}/ngày. Hôm nay bạn đã mua ${purchasedToday}, chỉ còn mua được thêm ${remaining}.`
+                        : `Sản phẩm "${item.product.name}" giới hạn mua tối đa ${limit}/ngày.`;
+                    return res.status(400).json({ message: msg });
+                }
+            }
+        }
+
         const orderType = hasPreorder ? 'preorder' : 'instant';
 
         // Apply promotion

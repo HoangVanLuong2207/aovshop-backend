@@ -110,6 +110,7 @@ const mapProduct = (p: any) => ({
     active: p.active,
     is_preorder: p.isPreorder || false,
     preorder_placeholder: p.preorderPlaceholder,
+    daily_buy_limit: p.dailyBuyLimit || null,
     created_at: p.createdAt,
     category: p.category,
 });

@@ -8,7 +8,8 @@
         "start": "node startup.js",
         "db:push": "drizzle-kit push",
         "db:seed": "tsx src/db/seed.ts",
-        "db:migrate-push": "tsx src/db/migrate-push.ts"
+        "db:migrate-push": "tsx src/db/migrate-push.ts",
+        "db:migrate-daily-limit": "tsx src/db/migrate-daily-limit.ts"
     },
     "dependencies": {
         "@libsql/client": "^0.14.0",
