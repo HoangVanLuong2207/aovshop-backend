@@ -1,5 +1,6 @@
 // Using Brevo HTTP API instead of SMTP
 // Render free tier blocks SMTP ports (587), so we use HTTP API (port 443)
+// Brevo credentials are read from DB settings (Admin Panel) with ENV fallback
 
 import { db } from '../db/index.js';
 import { settings } from '../db/schema.js';
@@ -17,15 +18,28 @@ interface SendResetPasswordEmailParams {
     token: string;
 }
 
+// Helper to get a setting from database with ENV fallback
+async function getSetting(key: string, envFallback?: string): Promise<string> {
+    try {
+        const result = await db.select().from(settings).where(eq(settings.key, key));
+        const dbValue = result[0]?.value;
+        if (dbValue) return dbValue;
+    } catch (error) {
+        // DB not available, fall through to ENV
+    }
+    return envFallback || '';
+}
+
 // Helper to get shop name from database
 async function getShopName(): Promise<string> {
-    try {
-        const result = await db.select().from(settings).where(eq(settings.key, 'shop_name'));
-        return result[0]?.value || process.env.SHOP_NAME || 'AOV Shop';
-    } catch (error) {
-        console.error('Error fetching shop name:', error);
-        return process.env.SHOP_NAME || 'AOV Shop';
-    }
+    return await getSetting('shop_name', process.env.SHOP_NAME) || 'AOV Shop';
+}
+
+// Get Brevo config from DB settings (fallback to ENV for backward compatibility)
+async function getBrevoConfig() {
+    const apiKey = await getSetting('brevo_api_key', process.env.BREVO_API_KEY);
+    const senderEmail = await getSetting('brevo_sender_email', process.env.BREVO_SENDER_EMAIL);
+    return { apiKey, senderEmail };
 }
 
 export async function sendVerificationEmail({ to, name, token }: SendVerificationEmailParams): Promise<boolean> {
@@ -66,19 +80,26 @@ export async function sendVerificationEmail({ to, name, token }: SendVerificatio
     `;
 
     try {
+        const brevo = await getBrevoConfig();
+
+        if (!brevo.apiKey) {
+            console.log('[Email] Brevo API Key chưa cấu hình — bỏ qua gửi email.');
+            return false;
+        }
+
         console.log('Sending email via Brevo HTTP API to:', to);
 
         const response = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
                 'accept': 'application/json',
-                'api-key': process.env.BREVO_API_KEY!,
+                'api-key': brevo.apiKey,
                 'content-type': 'application/json',
             },
             body: JSON.stringify({
                 sender: {
                     name: shopName,
-                    email: process.env.BREVO_SENDER_EMAIL,
+                    email: brevo.senderEmail,
                 },
                 to: [{ email: to, name }],
                 subject: 'Xác thực email của bạn',
@@ -156,19 +177,26 @@ export async function sendResetPasswordEmail({ to, name, token }: SendResetPassw
     `;
 
     try {
+        const brevo = await getBrevoConfig();
+
+        if (!brevo.apiKey) {
+            console.log('[Email] Brevo API Key chưa cấu hình — bỏ qua gửi email.');
+            return false;
+        }
+
         console.log('Sending reset password email via Brevo HTTP API to:', to);
 
         const response = await fetch('https://api.brevo.com/v3/smtp/email', {
             method: 'POST',
             headers: {
                 'accept': 'application/json',
-                'api-key': process.env.BREVO_API_KEY!,
+                'api-key': brevo.apiKey,
                 'content-type': 'application/json',
             },
             body: JSON.stringify({
                 sender: {
                     name: shopName,
-                    email: process.env.BREVO_SENDER_EMAIL,
+                    email: brevo.senderEmail,
                 },
                 to: [{ email: to, name }],
                 subject: 'Yêu cầu đặt lại mật khẩu',
