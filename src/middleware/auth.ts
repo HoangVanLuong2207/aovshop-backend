@@ -36,8 +36,17 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
         }
 
         // 2. Otherwise, verify as JWT
-        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number };
+        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number; role?: string };
 
+        // ENV-based admin (userId = -1)
+        if (decoded.userId === -1 && decoded.role === 'admin') {
+            req.user = {
+                id: -1,
+                email: process.env.ADMIN_EMAIL || 'admin',
+                role: 'admin',
+            };
+            return next();
+        }
 
         const user = await db.query.users.findFirst({
             where: eq(users.id, decoded.userId),
