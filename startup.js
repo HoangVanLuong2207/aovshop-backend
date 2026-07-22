@@ -90,6 +90,41 @@ async function main() {
             console.log('✅ Database already has data, skipping seed.');
         }
 
+        // ==================== SYNC ADMIN FROM ENV ====================
+        const adminEmail = process.env.ADMIN_EMAIL;
+        const adminPassword = process.env.ADMIN_PASSWORD;
+
+        if (adminEmail && adminPassword) {
+            console.log('👤 Syncing admin credentials from ENV...');
+            // Import bcryptjs dynamically
+            const bcrypt = await import('bcryptjs');
+
+            // Check if admin exists
+            const adminResult = await client.execute({
+                sql: "SELECT id, email FROM users WHERE role = 'admin' LIMIT 1",
+                args: [],
+            });
+
+            if (adminResult.rows.length > 0) {
+                const existingAdmin = adminResult.rows[0];
+                const hashedPassword = await bcrypt.default.hash(adminPassword, 10);
+
+                // Update admin email + password to match ENV
+                await client.execute({
+                    sql: "UPDATE users SET email = ?, password = ? WHERE id = ?",
+                    args: [adminEmail, hashedPassword, existingAdmin.id],
+                });
+
+                if (existingAdmin.email !== adminEmail) {
+                    console.log(`✅ Admin email updated: ${existingAdmin.email} → ${adminEmail}`);
+                } else {
+                    console.log('✅ Admin credentials synced.');
+                }
+            } else {
+                console.log('⚠️ No admin user found, will be created on seed.');
+            }
+        }
+
         // Start the server
         console.log('🌐 Starting server...');
         await import('./dist/index.js');
