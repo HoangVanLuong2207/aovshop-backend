@@ -110,8 +110,23 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
 // Export orders (MUST be before /:id route)
 router.get('/export', authMiddleware, async (req: AuthRequest, res) => {
     try {
+        const rawOrderIds = typeof req.query.order_ids === 'string' ? req.query.order_ids : '';
+        const orderIds = [...new Set(
+            rawOrderIds
+                .split(',')
+                .map(id => parseInt(id.trim(), 10))
+                .filter(id => Number.isInteger(id) && id > 0)
+        )];
+
+        if (orderIds.length === 0) {
+            return res.status(400).json({ message: 'Vui lòng chọn ít nhất một đơn hàng để xuất' });
+        }
+
         const userOrders = await db.query.orders.findMany({
-            where: eq(orders.userId, req.user!.id),
+            where: and(
+                eq(orders.userId, req.user!.id),
+                inArray(orders.id, orderIds)
+            ),
             with: {
                 items: true,
                 accounts: true,

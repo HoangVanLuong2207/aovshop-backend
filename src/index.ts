@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
 import rateLimit from 'express-rate-limit';
@@ -13,6 +14,9 @@ import { analyticsMiddleware } from './middleware/analytics.js';
 
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+// Local overrides keep secrets out of the shared environment file.
+dotenv.config({ path: '.env.local', override: true });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

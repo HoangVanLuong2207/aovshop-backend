@@ -1,8 +1,9 @@
 import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
 import { Router } from 'express';
+import bcrypt from 'bcryptjs';
 import { db } from '../db/index.js';
 import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages, paymentAccounts, deposits } from '../db/schema.js';
-import { eq, desc, sql, and, inArray, gte, lte, like, lt } from 'drizzle-orm';
+import { eq, desc, sql, and, or, inArray, gte, lte, like, lt } from 'drizzle-orm';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
 
@@ -413,23 +414,20 @@ router.get('/products/:id/accounts', async (req, res) => {
     }
 });
 
-// Export unsold accounts
+// Export all accounts in a product's inventory, including sold and available accounts.
 router.get('/products/:id/accounts/export-unsold', async (req, res) => {
     try {
         const productId = parseInt(req.params.id);
         
         const result = await db.query.productAccounts.findMany({
-            where: and(
-                eq(productAccounts.productId, productId),
-                eq(productAccounts.status, 'available')
-            ),
+            where: eq(productAccounts.productId, productId),
             orderBy: desc(productAccounts.id),
         });
 
         const accountStr = result.map(acc => acc.data).join('\n');
         
         res.setHeader('Content-Type', 'text/plain');
-        res.setHeader('Content-Disposition', `attachment; filename="unsold_accounts_${productId}.txt"`);
+        res.setHeader('Content-Disposition', `attachment; filename="all_accounts_${productId}.txt"`);
         res.send(accountStr);
     } catch (error) {
         console.error(error);
@@ -1321,11 +1319,21 @@ router.get('/users', async (req, res) => {
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
         const offset = (page - 1) * limit;
+        const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+        const whereClause = search
+            ? or(
+                like(users.name, `%${search}%`),
+                like(users.email, `%${search}%`)
+            )
+            : undefined;
 
-        const countResult = await db.select({ count: sql`count(*)` }).from(users);
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(users)
+            .where(whereClause);
         const total = Number(countResult[0]?.count || 0);
 
         const result = await db.query.users.findMany({
+            where: whereClause,
             orderBy: desc(users.id),
             limit,
             offset,
@@ -1390,6 +1398,37 @@ router.get('/users/:id', async (req, res) => {
             balance: user.balance,
             createdAt: user.createdAt,
         });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Reset a specific user's password. The plaintext password is never returned or stored.
+router.put('/users/:id/password', async (req, res) => {
+    try {
+        const userId = parseInt(req.params.id, 10);
+        const password = typeof req.body.password === 'string' ? req.body.password : '';
+
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(400).json({ message: 'ID người dùng không hợp lệ' });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ message: 'Mật khẩu mới phải có ít nhất 6 ký tự' });
+        }
+
+        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+        if (!user) {
+            return res.status(404).json({ message: 'Không tìm thấy người dùng' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await db.update(users)
+            .set({ password: hashedPassword, updatedAt: new Date().toISOString() })
+            .where(eq(users.id, userId));
+
+        res.json({ message: 'Đặt lại mật khẩu thành công' });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
