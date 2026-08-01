@@ -1,11 +1,81 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { categories, products, settings, orders } from '../db/schema.js';
-import { eq, and, like, desc, asc, sql, isNotNull } from 'drizzle-orm';
+import { categories, products, settings, orders, transactions, users } from '../db/schema.js';
+import { eq, and, like, desc, asc, sql, isNotNull, gte, lt } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
 
 const router = Router();
+
+const VIETNAM_UTC_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+type DateRange = {
+    start: string;
+    end: string;
+};
+
+// Dates are persisted as UTC ISO strings. Vietnam has a fixed UTC+7 offset,
+// so calculate calendar boundaries in Vietnam before converting them to UTC.
+const getVietnamDateRanges = (now = new Date()): { week: DateRange; month: DateRange } => {
+    const vietnamNow = new Date(now.getTime() + VIETNAM_UTC_OFFSET_MS);
+    const year = vietnamNow.getUTCFullYear();
+    const month = vietnamNow.getUTCMonth();
+    const day = vietnamNow.getUTCDate();
+    const dayOfWeek = vietnamNow.getUTCDay();
+    const daysSinceMonday = (dayOfWeek + 6) % 7;
+    const toVietnamMidnightIso = (date: number) =>
+        new Date(Date.UTC(year, month, date) - VIETNAM_UTC_OFFSET_MS).toISOString();
+
+    return {
+        week: {
+            start: toVietnamMidnightIso(day - daysSinceMonday),
+            end: toVietnamMidnightIso(day - daysSinceMonday + 7),
+        },
+        month: {
+            start: toVietnamMidnightIso(1),
+            end: new Date(Date.UTC(year, month + 1, 1) - VIETNAM_UTC_OFFSET_MS).toISOString(),
+        },
+    };
+};
+
+const anonymizeName = (name: string) => {
+    const characters = Array.from(name.trim());
+    if (characters.length === 0) return 'Khách hàng';
+    return `${characters.slice(0, Math.min(2, characters.length)).join('')}***`;
+};
+
+const getTopDepositors = async (range?: DateRange) => {
+    const conditions = [
+        eq(transactions.type, 'deposit'),
+        eq(transactions.status, 'completed'),
+    ];
+
+    if (range) {
+        conditions.push(gte(transactions.createdAt, range.start));
+        conditions.push(lt(transactions.createdAt, range.end));
+    }
+
+    const totalDeposit = sql<number>`sum(${transactions.amount})`;
+    const rows = await db.select({
+        userId: users.id,
+        name: users.name,
+        totalDeposit,
+        depositCount: sql<number>`count(${transactions.id})`,
+    })
+        .from(transactions)
+        .innerJoin(users, eq(transactions.userId, users.id))
+        .where(and(...conditions))
+        .groupBy(users.id, users.name)
+        .orderBy(desc(totalDeposit), asc(users.id))
+        .limit(5);
+
+    return rows.map((row, index) => ({
+        rank: index + 1,
+        display_name: anonymizeName(row.name),
+        total_deposit: Number(row.totalDeposit),
+        deposit_count: Number(row.depositCount),
+    }));
+};
 
 // Get public shop info (name, logo, banner, contact)
 router.get('/info', async (req, res) => {
@@ -30,6 +100,30 @@ router.get('/info', async (req, res) => {
     } catch (error) {
         console.error(error);
         res.json({ shop_name: 'AOV Shop', shop_logo: null, shop_banner: null, contact_zalo: null, contact_messenger: null, contact_hotline: null });
+    }
+});
+
+// Public top 5 deposit leaderboard. Only completed deposit transactions count.
+router.get('/top-deposit', async (req, res) => {
+    try {
+        const ranges = getVietnamDateRanges();
+        const [week, month, all] = await Promise.all([
+            getTopDepositors(ranges.week),
+            getTopDepositors(ranges.month),
+            getTopDepositors(),
+        ]);
+
+        res.json({
+            timezone: 'Asia/Ho_Chi_Minh',
+            periods: {
+                week: { ...ranges.week, leaderboard: week },
+                month: { ...ranges.month, leaderboard: month },
+                all: { leaderboard: all },
+            },
+        });
+    } catch (error) {
+        console.error('Failed to load top deposit leaderboard:', error);
+        res.status(500).json({ message: 'Không thể tải bảng xếp hạng nạp tiền' });
     }
 });
 

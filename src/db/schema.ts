@@ -117,6 +117,8 @@ export const transactions = sqliteTable('transactions', {
     userIdIdx: index('idx_transactions_user_id').on(table.userId),
     referenceIdx: index('idx_transactions_reference').on(table.reference),
     createdAtIdx: index('idx_transactions_created_at').on(table.createdAt),
+    // Used by the public top-deposit leaderboard (type/status + time range).
+    topDepositIdx: index('idx_transactions_top_deposit').on(table.type, table.status, table.createdAt, table.userId),
 }));
 
 // Settings table (key-value store for admin configurations)
