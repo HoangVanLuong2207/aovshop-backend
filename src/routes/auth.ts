@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import { OAuth2Client } from 'google-auth-library';
 import { db } from '../db/index.js';
-import { users } from '../db/schema.js';
+import { settings, users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
@@ -10,6 +11,32 @@ import { TelegramService } from '../services/telegram.js';
 import { ENV_ADMIN_ID, getEnvAdminCredentials, getSpecialAdminProfile, normalizeEmail, systemAdmin } from '../config/systemAdmin.js';
 
 const router = Router();
+const googleClient = new OAuth2Client();
+
+const publicUser = (user: typeof users.$inferSelect) => ({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    balance: user.balance,
+    emailVerified: user.emailVerified,
+});
+
+const getGoogleClientId = async () => {
+    const setting = await db.query.settings.findFirst({
+        where: eq(settings.key, 'google_client_id'),
+    });
+    return setting?.value?.trim() || null;
+};
+
+router.get('/google-config', async (_req, res) => {
+    try {
+        res.json({ clientId: await getGoogleClientId() });
+    } catch (error) {
+        console.error('Google config error:', error);
+        res.status(500).json({ message: 'Unable to load Google configuration' });
+    }
+});
 
 // Register
 router.post('/register', async (req, res) => {
@@ -147,6 +174,67 @@ router.post('/login', async (req, res) => {
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Google Identity Services sends a signed ID token to the browser. Verify it
+// on the server before trusting the Google account details it contains.
+router.post('/google', async (req, res) => {
+    try {
+        const { credential } = req.body;
+        const clientId = await getGoogleClientId();
+
+        if (!clientId) {
+            return res.status(503).json({ message: 'ÄÄƒng nháº­p Google chÆ°a Ä‘Æ°á»£c cáº¥u hÃ¬nh' });
+        }
+
+        if (typeof credential !== 'string' || !credential) {
+            return res.status(400).json({ message: 'Google token khÃ´ng há»£p lá»‡' });
+        }
+
+        const ticket = await googleClient.verifyIdToken({ idToken: credential, audience: clientId });
+        const payload = ticket.getPayload();
+        const email = normalizeEmail(payload?.email);
+        const googleId = payload?.sub;
+
+        if (!payload || !googleId || !email || !payload.email_verified) {
+            return res.status(401).json({ message: 'TÃ i khoáº£n Google cáº§n cÃ³ email Ä‘Ã£ xÃ¡c minh' });
+        }
+
+        let user = await db.query.users.findFirst({ where: eq(users.googleId, googleId) });
+
+        if (!user) {
+            // A verified Google email proves control of the same mailbox, so an
+            // existing password account can be safely linked on first Google login.
+            user = await db.query.users.findFirst({ where: eq(users.email, email) });
+            if (user) {
+                await db.update(users)
+                    .set({ googleId, emailVerified: true, updatedAt: new Date().toISOString() })
+                    .where(eq(users.id, user.id));
+                user = { ...user, googleId, emailVerified: true };
+            } else {
+                const name = payload.name?.trim() || email.split('@')[0];
+                // Password is required by the legacy schema; this random hash
+                // cannot be used to sign in because no password is exposed.
+                const password = await bcrypt.hash(`${googleId}:${crypto.randomUUID()}`, 10);
+                const result = await db.insert(users).values({
+                    name,
+                    email,
+                    password,
+                    googleId,
+                    role: 'user',
+                    balance: 0,
+                    emailVerified: true,
+                }).returning();
+                user = result[0];
+            }
+        }
+
+        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+        res.json({ message: 'ÄÄƒng nháº­p Google thÃ nh cÃ´ng', user: publicUser(user), token });
+    } catch (error) {
+        console.error('Google login error:', error);
+        res.status(401).json({ message: 'KhÃ´ng thá»ƒ xÃ¡c minh Ä‘Äƒng nháº­p Google' });
     }
 });
 

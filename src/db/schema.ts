@@ -7,6 +7,8 @@ export const users = sqliteTable('users', {
     name: text('name').notNull(),
     email: text('email').notNull().unique(),
     password: text('password').notNull(),
+    // Google subject identifier. It is immutable for a Google account, unlike email.
+    googleId: text('google_id').unique(),
     role: text('role', { enum: ['admin', 'user'] }).default('user').notNull(),
     balance: real('balance').default(0).notNull(),
     emailVerified: integer('email_verified', { mode: 'boolean' }).default(true).notNull(), // default true for existing users
