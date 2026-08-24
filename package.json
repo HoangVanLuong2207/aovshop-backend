@@ -10,6 +10,7 @@
         "db:seed": "tsx src/db/seed.ts",
         "db:migrate-push": "tsx src/db/migrate-push.ts",
         "db:migrate-daily-limit": "tsx src/db/migrate-daily-limit.ts",
+        "db:migrate-minimum-order-quantity": "tsx src/db/migrate-minimum-order-quantity.ts",
         "db:migrate-google-auth": "tsx src/db/migrate-google-auth.ts"
     },
     "dependencies": {

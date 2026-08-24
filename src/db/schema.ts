@@ -46,6 +46,7 @@ export const products = sqliteTable('products', {
     isPreorder: integer('is_preorder', { mode: 'boolean' }).default(false).notNull(),
     preorderPlaceholder: text('preorder_placeholder'),
     dailyBuyLimit: integer('daily_buy_limit'), // NULL or 0 = no limit
+    minimumOrderQuantity: integer('minimum_order_quantity'), // NULL or 0 = no minimum
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 });

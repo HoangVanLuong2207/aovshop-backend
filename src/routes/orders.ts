@@ -186,6 +186,10 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { items, promo_code, note, customer_note } = req.body;
 
+        if (!Array.isArray(items) || items.length === 0) {
+            return res.status(400).json({ message: 'Giỏ hàng không hợp lệ hoặc đang trống' });
+        }
+
         // Get user
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.user!.id),
@@ -204,12 +208,22 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
         const subtotalByProductId: Record<number, number> = {};
 
         for (const item of items) {
+            const quantity = Number(item?.quantity);
+            if (!Number.isInteger(quantity) || quantity < 1) {
+                return res.status(400).json({ message: 'Số lượng sản phẩm không hợp lệ' });
+            }
             const product = await db.query.products.findFirst({
                 where: eq(products.id, item.product_id),
             });
 
             if (!product) {
                 return res.status(400).json({ message: `Sản phẩm không tồn tại` });
+            }
+
+            if (product.minimumOrderQuantity && quantity < product.minimumOrderQuantity) {
+                return res.status(400).json({
+                    message: `Sản phẩm "${product.name}" yêu cầu mua tối thiểu ${product.minimumOrderQuantity} sản phẩm.`
+                });
             }
 
             if (product.isPreorder) {
@@ -222,10 +236,10 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                         eq(productAccounts.productId, product.id),
                         eq(productAccounts.status, 'available')
                     ),
-                    limit: item.quantity,
+                    limit: quantity,
                 });
 
-                if (availableAccounts.length < item.quantity) {
+                if (availableAccounts.length < quantity) {
                     return res.status(400).json({ message: `${product.name} không đủ số lượng tài khoản trong kho (còn lại: ${availableAccounts.length})` });
                 }
 
@@ -233,13 +247,13 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             }
 
             const price = product.salePrice || product.price;
-            const itemTotal = price * item.quantity;
+            const itemTotal = price * quantity;
             subtotal += itemTotal;
             subtotalByProductId[product.id] = (subtotalByProductId[product.id] || 0) + itemTotal;
 
             orderProducts.push({
                 product,
-                quantity: item.quantity,
+                quantity,
                 price,
                 total: itemTotal,
             });

@@ -191,7 +191,7 @@ router.get('/products', async (req, res) => {
 
 router.post('/products', async (req, res) => {
     try {
-        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit } = req.body;
+        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity } = req.body;
 
         const [product] = await db.insert(products).values({
             categoryId: category_id ? parseInt(category_id) : null,
@@ -205,6 +205,7 @@ router.post('/products', async (req, res) => {
             isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
             preorderPlaceholder: req.body.preorder_placeholder || null,
             dailyBuyLimit: daily_buy_limit ? parseInt(daily_buy_limit) : null,
+            minimumOrderQuantity: minimum_order_quantity ? parseInt(minimum_order_quantity) : null,
         }).returning();
 
         // Save gallery images
@@ -226,7 +227,7 @@ router.post('/products', async (req, res) => {
 
 const handleProductUpdate = async (req: any, res: any) => {
     try {
-        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit } = req.body;
+        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity } = req.body;
         const productId = parseInt(req.params.id);
         const updateData: any = {
             categoryId: category_id ? parseInt(category_id) : null,
@@ -239,6 +240,7 @@ const handleProductUpdate = async (req: any, res: any) => {
             isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
             preorderPlaceholder: req.body.preorder_placeholder !== undefined ? req.body.preorder_placeholder : undefined,
             dailyBuyLimit: daily_buy_limit !== undefined ? (daily_buy_limit ? parseInt(daily_buy_limit) : null) : undefined,
+            minimumOrderQuantity: minimum_order_quantity !== undefined ? (minimum_order_quantity ? parseInt(minimum_order_quantity) : null) : undefined,
         };
 
         if (image !== undefined) {
