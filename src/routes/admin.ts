@@ -1,0 +1,1561 @@
+import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
+import { Router } from 'express';
+import bcrypt from 'bcryptjs';
+import { db } from '../db/index.js';
+import { categories, products, promotions, orders, orderItems, transactions, users, settings, productAccounts, productImages, paymentAccounts, deposits } from '../db/schema.js';
+import { eq, desc, sql, and, or, inArray, gte, lte, like, lt } from 'drizzle-orm';
+import { PushService } from '../services/push.js';
+import { TelegramService } from '../services/telegram.js';
+
+
+const router = Router();
+
+const mapPromotionResponse = (promo: any) => ({
+    id: promo.id,
+    code: promo.code,
+    name: promo.name,
+    description: promo.description,
+    type: promo.type,
+    value: promo.value,
+    min_order: promo.minOrder,
+    max_discount: promo.maxDiscount,
+    usage_limit: promo.usageLimit,
+    used_count: promo.usedCount,
+    applies_to_product_ids: promo.appliesToProductIds,
+    start_date: promo.startDate,
+    end_date: promo.endDate,
+    active: promo.active,
+    created_at: promo.createdAt,
+    updated_at: promo.updatedAt,
+});
+
+// Apply auth and admin middleware to all routes
+router.use(authMiddleware);
+router.use(adminMiddleware);
+
+// ==================== CATEGORIES ====================
+
+router.get('/categories', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const countResult = await db.select({ count: sql`count(*)` }).from(categories);
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.categories.findMany({
+            with: { products: true },
+            orderBy: desc(categories.id),
+            limit,
+            offset,
+        });
+
+        const data = result.map(cat => ({
+            ...cat,
+            products_count: cat.products.length,
+        }));
+
+        res.json({ 
+            data,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.get('/categories/all', async (req, res) => {
+    try {
+        const result = await db.query.categories.findMany();
+        res.json(result);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.post('/categories', async (req, res) => {
+    try {
+        const { name, description, image, active } = req.body;
+
+        const [category] = await db.insert(categories).values({
+            name,
+            description,
+            image: image || null,
+            active: active === '1' || active === 'true' || active === true,
+        }).returning();
+        res.json(category);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Category update
+const handleCategoryUpdate = async (req: any, res: any) => {
+    try {
+        const { name, description, image, active } = req.body;
+        const updateData: any = {
+            name,
+            description,
+            active: active === '1' || active === 'true' || active === true
+        };
+
+        if (image !== undefined) {
+            updateData.image = image || null;
+        }
+
+        await db.update(categories)
+            .set(updateData)
+            .where(eq(categories.id, parseInt(req.params.id)));
+
+        const category = await db.query.categories.findFirst({
+            where: eq(categories.id, parseInt(req.params.id)),
+        });
+        res.json(category);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+};
+
+router.post('/categories/:id', handleCategoryUpdate);
+router.put('/categories/:id', handleCategoryUpdate);
+
+router.delete('/categories/:id', async (req, res) => {
+    try {
+        await db.delete(categories).where(eq(categories.id, parseInt(req.params.id)));
+        res.json({ message: 'Đã xóa danh mục' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== PRODUCTS ====================
+
+router.get('/products', async (req, res) => {
+    try {
+        const { category_id, search, active } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const conditions = [];
+
+        if (category_id) {
+            conditions.push(eq(products.categoryId, parseInt(category_id as string)));
+        }
+        if (search) {
+            conditions.push(like(products.name, `%${search}%`));
+        }
+        if (active !== undefined && active !== '') {
+            conditions.push(eq(products.active, active === 'true' || active === '1'));
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(products)
+            .where(whereClause);
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.products.findMany({
+            where: whereClause,
+            with: { category: true, images: true },
+            orderBy: desc(products.id),
+            limit,
+            offset,
+        });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.post('/products', async (req, res) => {
+    try {
+        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity } = req.body;
+
+        const [product] = await db.insert(products).values({
+            categoryId: category_id ? parseInt(category_id) : null,
+            name,
+            description,
+            price: parseFloat(price),
+            salePrice: sale_price ? parseFloat(sale_price) : null,
+            stock: stock ? parseInt(stock) : 0,
+            image: image || null,
+            active: active === '1' || active === 'true' || active === true,
+            isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
+            preorderPlaceholder: req.body.preorder_placeholder || null,
+            dailyBuyLimit: daily_buy_limit ? parseInt(daily_buy_limit) : null,
+            minimumOrderQuantity: minimum_order_quantity ? parseInt(minimum_order_quantity) : null,
+        }).returning();
+
+        // Save gallery images
+        if (images && Array.isArray(images) && images.length > 0) {
+            const imageValues = images.map((url: string, index: number) => ({
+                productId: product.id,
+                url,
+                sortOrder: index,
+            }));
+            await db.insert(productImages).values(imageValues);
+        }
+
+        res.json(product);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+const handleProductUpdate = async (req: any, res: any) => {
+    try {
+        const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity } = req.body;
+        const productId = parseInt(req.params.id);
+        const updateData: any = {
+            categoryId: category_id ? parseInt(category_id) : null,
+            name,
+            description,
+            price: parseFloat(price),
+            salePrice: sale_price ? parseFloat(sale_price) : null,
+            stock: stock ? parseInt(stock) : 0,
+            active: active === '1' || active === 'true' || active === true,
+            isPreorder: is_preorder === true || is_preorder === 'true' || is_preorder === 1,
+            preorderPlaceholder: req.body.preorder_placeholder !== undefined ? req.body.preorder_placeholder : undefined,
+            dailyBuyLimit: daily_buy_limit !== undefined ? (daily_buy_limit ? parseInt(daily_buy_limit) : null) : undefined,
+            minimumOrderQuantity: minimum_order_quantity !== undefined ? (minimum_order_quantity ? parseInt(minimum_order_quantity) : null) : undefined,
+        };
+
+        if (image !== undefined) {
+            updateData.image = image || null;
+        }
+
+        await db.update(products)
+            .set(updateData)
+            .where(eq(products.id, productId));
+
+        // Replace gallery images
+        if (images !== undefined && Array.isArray(images)) {
+            await db.delete(productImages).where(eq(productImages.productId, productId));
+            if (images.length > 0) {
+                const imageValues = images.map((url: string, index: number) => ({
+                    productId,
+                    url,
+                    sortOrder: index,
+                }));
+                await db.insert(productImages).values(imageValues);
+            }
+        }
+
+        const product = await db.query.products.findFirst({
+            where: eq(products.id, productId),
+            with: { images: true },
+        });
+        res.json(product);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+};
+
+router.post('/products/:id', handleProductUpdate);
+router.put('/products/:id', handleProductUpdate);
+
+router.delete('/products/:id', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.id);
+
+        // Delete gallery images
+        await db.delete(productImages).where(eq(productImages.productId, productId));
+
+        // Delete available accounts (chưa bán - có thể xóa hoàn toàn)
+        await db.delete(productAccounts).where(
+            and(
+                eq(productAccounts.productId, productId),
+                eq(productAccounts.status, 'available')
+            )
+        );
+
+        // Set productId to null for sold accounts (giữ lại lịch sử)
+        await db.update(productAccounts)
+            .set({ productId: null as any })
+            .where(eq(productAccounts.productId, productId));
+
+        // Set productId to null for order items (giữ lại lịch sử đơn hàng)
+        await db.update(orderItems)
+            .set({ productId: null })
+            .where(eq(orderItems.productId, productId));
+
+        // Now we can safely delete the product
+        await db.delete(products).where(eq(products.id, productId));
+        res.json({ message: 'Đã xóa sản phẩm' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== PRODUCT ACCOUNTS ====================
+
+// Bulk upload accounts
+router.post('/products/:id/accounts', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.id);
+        const { accounts } = req.body;
+
+        if (!accounts) {
+            return res.status(400).json({ message: 'Thiếu danh sách tài khoản' });
+        }
+
+        // Handle both string (multi-line) and array
+        const rawAccountList = typeof accounts === 'string'
+            ? accounts.split('\n').map(line => line.trim()).filter(line => line.length > 0)
+            : accounts;
+
+        if (rawAccountList.length === 0) {
+            return res.status(400).json({ message: 'Danh sách tài khoản trống' });
+        }
+
+        // Deduplicate within the uploaded list itself
+        const accountList = [...new Set(rawAccountList)] as string[];
+
+        // Plain INSERT — no duplicate check, no reads.
+        // UNIQUE constraint on `data` is the safety net if a duplicate somehow arrives.
+        const values = accountList.map((data: string) => ({
+            productId,
+            data,
+            status: 'available' as const,
+        }));
+
+        // Chunk insertion to avoid hitting SQLite/LibSQL variables limit (max 999 or 32766 parameters)
+        // Uses db.batch() to send all insert queries in a single HTTP request to Turso database
+        const BATCH_SIZE = 250;
+        const batchQueries = [];
+        for (let i = 0; i < values.length; i += BATCH_SIZE) {
+            const batch = values.slice(i, i + BATCH_SIZE);
+            batchQueries.push(db.insert(productAccounts).values(batch));
+        }
+        if (batchQueries.length > 0) {
+            await db.batch(batchQueries as [any, ...any[]]);
+        }
+
+        // Update product stock
+        const remainingCount = await db.select({ count: sql`count(*)` })
+            .from(productAccounts)
+            .where(and(
+                eq(productAccounts.productId, productId),
+                eq(productAccounts.status, 'available')
+            ));
+
+        await db.update(products)
+            .set({ stock: Number(remainingCount[0]?.count || 0) })
+            .where(eq(products.id, productId));
+
+        res.json({
+            message: `Đã thêm ${accountList.length} tài khoản thành công`,
+            added: accountList.length,
+            stock: Number(remainingCount[0]?.count || 0),
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+
+// Get accounts for a product (paginated)
+router.get('/products/:id/accounts', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.id);
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(productAccounts)
+            .where(eq(productAccounts.productId, productId));
+        
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.productAccounts.findMany({
+            where: eq(productAccounts.productId, productId),
+            orderBy: desc(productAccounts.id),
+            limit: limit,
+            offset: offset,
+        });
+
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Export all accounts in a product's inventory, including sold and available accounts.
+router.get('/products/:id/accounts/export-unsold', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.id);
+        
+        const result = await db.query.productAccounts.findMany({
+            where: eq(productAccounts.productId, productId),
+            orderBy: desc(productAccounts.id),
+        });
+
+        const accountStr = result.map(acc => acc.data).join('\n');
+        
+        res.setHeader('Content-Type', 'text/plain');
+        res.setHeader('Content-Disposition', `attachment; filename="all_accounts_${productId}.txt"`);
+        res.send(accountStr);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Delete specific account
+router.delete('/products/:productId/accounts/:accountId', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.productId);
+        const accountId = parseInt(req.params.accountId);
+
+        await db.delete(productAccounts).where(eq(productAccounts.id, accountId));
+
+        // Update product stock
+        const remainingCount = await db.select({ count: sql`count(*)` })
+            .from(productAccounts)
+            .where(and(
+                eq(productAccounts.productId, productId),
+                eq(productAccounts.status, 'available')
+            ));
+
+        const newStock = Number(remainingCount[0]?.count || 0);
+        await db.update(products)
+            .set({ stock: newStock })
+            .where(eq(products.id, productId));
+
+        res.json({ message: 'Đã xóa tài khoản', stock: newStock });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Bulk delete accounts
+router.post('/products/:productId/accounts/bulk-delete', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.productId);
+        const { ids } = req.body;
+
+        console.log(`[Admin] Bulk delete request for product ${productId}. IDs:`, ids);
+
+        if (!ids || !Array.isArray(ids) || ids.length === 0) {
+            return res.status(400).json({ message: 'Thiếu danh sách ID tài khoản' });
+        }
+
+        // Clean IDs to ensure they are valid numbers
+        const cleanIds = ids.map(id => parseInt(String(id))).filter(id => !isNaN(id));
+        
+        if (cleanIds.length === 0) {
+            return res.status(400).json({ message: 'Danh sách ID không hợp lệ' });
+        }
+
+        const deleteResult = await db.delete(productAccounts).where(
+            and(
+                eq(productAccounts.productId, productId),
+                inArray(productAccounts.id, cleanIds)
+            )
+        );
+
+        console.log(`[Admin] Successfully deleted accounts. Re-calculating stock...`);
+
+        // Update product stock
+        const remainingCount = await db.select({ count: sql`count(*)` })
+            .from(productAccounts)
+            .where(and(
+                eq(productAccounts.productId, productId),
+                eq(productAccounts.status, 'available')
+            ));
+
+        const newStock = Number(remainingCount[0]?.count || 0);
+        await db.update(products)
+            .set({ stock: newStock })
+            .where(eq(products.id, productId));
+
+        res.json({ message: `Đã xóa ${cleanIds.length} tài khoản thành công`, stock: newStock });
+    } catch (error) {
+        console.error('[Admin Bulk Delete Error]:', error);
+        res.status(500).json({ message: 'Lỗi server khi xóa hàng loạt', error: String(error) });
+    }
+});
+
+// Clear available accounts
+router.post('/products/:id/accounts/clear', async (req, res) => {
+    try {
+        const productId = parseInt(req.params.id);
+
+        await db.delete(productAccounts).where(and(
+            eq(productAccounts.productId, productId),
+            eq(productAccounts.status, 'available')
+        ));
+
+        // Update product stock
+        await db.update(products)
+            .set({ stock: 0 })
+            .where(eq(products.id, productId));
+
+        res.json({ message: 'Đã xóa tất cả tài khoản chưa bán', stock: 0 });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+
+// Search account by data
+router.get('/accounts/search', async (req, res) => {
+    try {
+        const { q } = req.query;
+        if (!q || typeof q !== 'string') {
+            return res.status(400).json({ message: 'Thiếu từ khóa tìm kiếm' });
+        }
+
+        // Search in productAccounts table
+        const result = await db.query.productAccounts.findFirst({
+            where: like(productAccounts.data, `%${q}%`),
+            with: {
+                product: {
+                    with: {
+                        category: true
+                    }
+                },
+            },
+        });
+
+        if (!result || !result.product) {
+            return res.json({ found: false });
+        }
+
+        res.json({
+            found: true,
+            product: {
+                id: result.product.id,
+                name: result.product.name,
+                category: (result.product as any).category ? {
+                    id: (result.product as any).category.id,
+                    name: (result.product as any).category.name,
+                } : null
+            },
+            status: result.status,
+            accountId: result.id,
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+
+// ==================== PROMOTIONS ====================
+
+router.get('/promotions', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const countResult = await db.select({ count: sql`count(*)` }).from(promotions);
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.promotions.findMany({
+            orderBy: desc(promotions.id),
+            limit,
+            offset,
+        });
+        res.json({ 
+            data: result.map(mapPromotionResponse),
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.post('/promotions', async (req, res) => {
+    try {
+        const { code, name, description, type, value, min_order, max_discount, usage_limit, start_date, end_date, active, applies_to_product_ids } = req.body;
+        const normalizedProductIds = Array.isArray(applies_to_product_ids)
+            ? applies_to_product_ids.map((id: any) => parseInt(id)).filter((id: number) => !Number.isNaN(id))
+            : [];
+        const [promo] = await db.insert(promotions).values({
+            code,
+            name,
+            description,
+            type,
+            value: parseFloat(value),
+            minOrder: min_order ? parseFloat(min_order) : null,
+            maxDiscount: max_discount ? parseFloat(max_discount) : null,
+            usageLimit: usage_limit ? parseInt(usage_limit) : null,
+            appliesToProductIds: normalizedProductIds.length > 0 ? JSON.stringify(normalizedProductIds) : null,
+            startDate: start_date || null,
+            endDate: end_date || null,
+            active: active === '1' || active === true,
+        }).returning();
+        res.json(mapPromotionResponse(promo));
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.put('/promotions/:id', async (req, res) => {
+    try {
+        const { code, name, description, type, value, min_order, max_discount, usage_limit, start_date, end_date, active, applies_to_product_ids } = req.body;
+        const normalizedProductIds = Array.isArray(applies_to_product_ids)
+            ? applies_to_product_ids.map((id: any) => parseInt(id)).filter((id: number) => !Number.isNaN(id))
+            : [];
+        await db.update(promotions)
+            .set({
+                code,
+                name,
+                description,
+                type,
+                value: parseFloat(value),
+                minOrder: min_order ? parseFloat(min_order) : null,
+                maxDiscount: max_discount ? parseFloat(max_discount) : null,
+                usageLimit: usage_limit ? parseInt(usage_limit) : null,
+                appliesToProductIds: normalizedProductIds.length > 0 ? JSON.stringify(normalizedProductIds) : null,
+                startDate: start_date || null,
+                endDate: end_date || null,
+                active: active === '1' || active === true,
+            })
+            .where(eq(promotions.id, parseInt(req.params.id)));
+
+        const promo = await db.query.promotions.findFirst({
+            where: eq(promotions.id, parseInt(req.params.id)),
+        });
+        res.json(promo ? mapPromotionResponse(promo) : null);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.delete('/promotions/:id', async (req, res) => {
+    try {
+        await db.delete(promotions).where(eq(promotions.id, parseInt(req.params.id)));
+        res.json({ message: 'Đã xóa khuyến mãi' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== ORDERS ====================
+
+router.get('/orders', async (req, res) => {
+    try {
+        const { status, type, q } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string || req.query.per_page as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const conditions = [];
+
+        if (status) {
+            conditions.push(eq(orders.status, status as any));
+        }
+        if (type) {
+            conditions.push(eq(orders.orderType, type as any));
+        }
+        if (q) {
+            conditions.push(sql`${orders.id} = ${parseInt(q as string)}`);
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(orders)
+            .where(whereClause);
+        
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.orders.findMany({
+            where: whereClause,
+            with: { user: true, items: true },
+            orderBy: desc(orders.id),
+            limit,
+            offset,
+        });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Order statistics endpoint (must be before /:id)
+router.get('/orders/statistics', async (req, res) => {
+    try {
+        const { start_date, end_date } = req.query;
+
+        // Build date filter conditions - dates are stored as ISO strings in SQLite
+        const conditions = [];
+        if (start_date) {
+            conditions.push(gte(orders.createdAt, start_date as string));
+        }
+        if (end_date) {
+            conditions.push(lte(orders.createdAt, end_date as string));
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        // Get total orders count
+        const totalOrdersResult = await db.select({ count: sql`count(*)` })
+            .from(orders)
+            .where(whereClause ? and(whereClause) : undefined);
+
+        // Get completed orders and revenue
+        const completedConditions = whereClause
+            ? and(whereClause, eq(orders.status, 'completed'))
+            : eq(orders.status, 'completed');
+
+        const revenueResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(total), 0)`
+        }).from(orders).where(completedConditions);
+
+        // Get pending orders count
+        const pendingConditions = whereClause
+            ? and(whereClause, eq(orders.status, 'pending'))
+            : eq(orders.status, 'pending');
+
+        const pendingResult = await db.select({ count: sql`count(*)` })
+            .from(orders)
+            .where(pendingConditions);
+
+        res.json({
+            total_orders: Number(totalOrdersResult[0]?.count || 0),
+            completed_orders: Number(revenueResult[0]?.count || 0),
+            pending_orders: Number(pendingResult[0]?.count || 0),
+            total_revenue: Number(revenueResult[0]?.sum || 0),
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.get('/orders/:id', async (req, res) => {
+    try {
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, parseInt(req.params.id)),
+            with: { user: true, items: true, accounts: true },
+        });
+        res.json(order);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.put('/orders/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body;
+        await db.update(orders)
+            .set({ status })
+            .where(eq(orders.id, parseInt(req.params.id)));
+
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, parseInt(req.params.id)),
+        });
+        res.json(order);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Also support PATCH for status (used by frontend)
+router.patch('/orders/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body;
+        await db.update(orders)
+            .set({ status })
+            .where(eq(orders.id, parseInt(req.params.id)));
+
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, parseInt(req.params.id)),
+        });
+        res.json(order);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Deliver pre-order: admin fills delivery data and marks as delivered
+router.put('/orders/:id/deliver', async (req, res) => {
+    try {
+        const orderId = parseInt(req.params.id);
+        const { delivery_data } = req.body;
+
+        if (!delivery_data || !delivery_data.trim()) {
+            return res.status(400).json({ message: 'Vui lòng nhập nội dung giao hàng' });
+        }
+
+        const order = await db.query.orders.findFirst({
+            where: eq(orders.id, orderId),
+        });
+
+        if (!order) {
+            return res.status(404).json({ message: 'Đơn hàng không tồn tại' });
+        }
+
+        if (order.orderType !== 'preorder') {
+            return res.status(400).json({ message: 'Đơn hàng này không phải pre-order' });
+        }
+
+        await db.update(orders)
+            .set({
+                deliveryData: delivery_data.trim(),
+                deliveredAt: new Date().toISOString(),
+                status: 'delivered' as any,
+            })
+            .where(eq(orders.id, orderId));
+
+        const updatedOrder = await db.query.orders.findFirst({
+            where: eq(orders.id, orderId),
+            with: { user: true, items: true },
+        });
+
+        res.json({ message: 'Giao hàng thành công', order: updatedOrder });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== TRANSACTIONS ====================
+
+router.get('/transactions', async (req, res) => {
+    try {
+        const { status, type } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string || req.query.per_page as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const conditions = [];
+
+        if (status) {
+            conditions.push(eq(transactions.status, status as any));
+        }
+        if (type) {
+            conditions.push(eq(transactions.type, type as any));
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(transactions)
+            .where(whereClause);
+        
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.transactions.findMany({
+            where: whereClause,
+            with: { user: true },
+            orderBy: desc(transactions.id),
+            limit,
+            offset,
+        });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Transaction statistics endpoint
+router.get('/transactions/statistics', async (req, res) => {
+    try {
+        // Get total deposits
+        const depositsResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(amount), 0)`
+        }).from(transactions).where(
+            and(
+                eq(transactions.type, 'deposit'),
+                eq(transactions.status, 'completed')
+            )
+        );
+
+        // Get total purchases/spending
+        const purchasesResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(ABS(amount)), 0)`
+        }).from(transactions).where(
+            and(
+                eq(transactions.type, 'purchase'),
+                eq(transactions.status, 'completed')
+            )
+        );
+
+        // Get pending deposits
+        const pendingResult = await db.select({
+            count: sql`count(*)`,
+            sum: sql`COALESCE(sum(amount), 0)`
+        }).from(transactions).where(
+            and(
+                eq(transactions.type, 'deposit'),
+                eq(transactions.status, 'pending')
+            )
+        );
+
+        res.json({
+            total_deposits: Number(depositsResult[0]?.sum || 0),
+            total_deposit_count: Number(depositsResult[0]?.count || 0),
+            total_spending: Number(purchasesResult[0]?.sum || 0),
+            total_purchase_count: Number(purchasesResult[0]?.count || 0),
+            pending_deposits: Number(pendingResult[0]?.sum || 0),
+            pending_deposit_count: Number(pendingResult[0]?.count || 0),
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== DEPOSITS (Bank Requests) ====================
+
+// Get all deposits (with filtering)
+router.get('/deposits', async (req, res) => {
+    try {
+        const { status, q } = req.query;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string || req.query.per_page as string) || 20;
+        const offset = (page - 1) * limit;
+
+        const conditions = [];
+
+        if (status) {
+            conditions.push(eq(deposits.status, status as any));
+        }
+        
+        if (q) {
+            conditions.push(like(deposits.reference, `%${q}%`));
+        }
+
+        const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(deposits)
+            .where(whereClause);
+        
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.deposits.findMany({
+            where: whereClause,
+            with: { user: true, bank: true },
+            orderBy: desc(deposits.id),
+            limit,
+            offset,
+        });
+        res.json({ 
+            data: result,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Clear junk deposits (pending/expired)
+router.delete('/deposits/junk', async (req, res) => {
+    try {
+        const result = await db.delete(deposits)
+            .where(
+                inArray(deposits.status, ['pending', 'expired'])
+            )
+            .returning({ id: deposits.id });
+        
+        res.json({ message: `Đã xóa ${result.length} đơn nạp rác`, count: result.length });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Manually approve deposit
+router.post('/deposits/:id/approve', async (req, res) => {
+    try {
+        const depositId = parseInt(req.params.id);
+        
+        await db.transaction(async (tx) => {
+            const deposit = await tx.query.deposits.findFirst({
+                where: eq(deposits.id, depositId),
+                with: { user: true }
+            });
+
+            if (!deposit) throw new Error('Không tìm thấy đơn nạp');
+            if (deposit.status === 'completed') throw new Error('Đơn nạp đã hoàn thành trước đó');
+
+            const user = deposit.user;
+            const amount = deposit.amount;
+            const currentBalance = user.balance || 0;
+            const newBalance = currentBalance + amount;
+
+            // Update user balance
+            await tx.update(users).set({ balance: newBalance }).where(eq(users.id, user.id));
+
+            // Update deposit status
+            await tx.update(deposits).set({ 
+                status: 'completed',
+                updatedAt: new Date().toISOString()
+            }).where(eq(deposits.id, deposit.id));
+
+            // Create transaction
+            await tx.insert(transactions).values({
+                userId: user.id,
+                type: 'deposit',
+                amount,
+                balanceBefore: currentBalance,
+                balanceAfter: newBalance,
+                status: 'completed',
+                description: `Duyệt nạp tiền thủ công bởi Admin (Đơn #${deposit.id})`,
+                reference: deposit.reference,
+            });
+        });
+
+        res.json({ message: 'Đã duyệt đơn nạp thành công' });
+    } catch (error: any) {
+        console.error(error);
+        res.status(400).json({ message: error.message || 'Lỗi server' });
+    }
+});
+
+// Manual deposit (admin)
+router.post('/transactions/deposit', async (req: AuthRequest, res) => {
+    try {
+        const { user_id, amount, description } = req.body;
+
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, parseInt(user_id)),
+        });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const newBalance = user.balance + parseFloat(amount);
+
+        // Update balance
+        await db.update(users)
+            .set({ balance: newBalance })
+            .where(eq(users.id, user.id));
+
+        // Create transaction
+        const [transaction] = await db.insert(transactions).values({
+            userId: user.id,
+            type: 'deposit',
+            amount: parseFloat(amount),
+            balanceBefore: user.balance,
+            balanceAfter: newBalance,
+            status: 'completed',
+            description: description || 'Nạp tiền thủ công bởi Admin',
+        }).returning();
+
+        res.json({ message: 'Nạp tiền thành công', transaction });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== DASHBOARD STATS ====================
+
+router.get('/stats', async (req, res) => {
+    try {
+        const totalOrders = await db.select({ count: sql`count(*)` }).from(orders);
+        const totalProducts = await db.select({ count: sql`count(*)` }).from(products);
+        const totalUsers = await db.select({ count: sql`count(*)` }).from(users);
+        const totalRevenue = await db.select({ sum: sql`sum(total)` }).from(orders).where(eq(orders.status, 'completed'));
+
+        res.json({
+            total_orders: totalOrders[0].count,
+            total_products: totalProducts[0].count,
+            total_users: totalUsers[0].count,
+            total_revenue: totalRevenue[0].sum || 0,
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== SETTINGS ====================
+
+router.get('/settings', async (req, res) => {
+    try {
+        const result = await db.query.settings.findMany();
+
+        // Convert to key-value object
+        const settingsObj: Record<string, string> = {};
+        result.forEach(s => {
+            settingsObj[s.key] = s.value || '';
+        });
+
+        res.json(settingsObj);
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.post('/settings', async (req, res) => {
+    try {
+        const settingsData = req.body;
+        const savedKeys = [];
+
+        // Define keys we want to exclude (metadata from previous GET requests)
+        const excludeKeys = ['id', 'updated_at', 'updatedAt', 'description', 'created_at', 'createdAt'];
+
+        for (const [key, value] of Object.entries(settingsData)) {
+            // Only process string keys and skip excluded metadata keys
+            if (excludeKeys.includes(key) || typeof key !== 'string') continue;
+
+            const stringValue = value === null || value === undefined ? '' : String(value);
+
+            // Upsert each setting
+            const existing = await db.query.settings.findFirst({
+                where: eq(settings.key, key),
+            });
+
+            if (existing) {
+                await db.update(settings)
+                    .set({ 
+                        value: stringValue,
+                        updatedAt: new Date().toISOString()
+                    })
+                    .where(eq(settings.key, key));
+            } else {
+                await db.insert(settings).values({
+                    key,
+                    value: stringValue,
+                });
+            }
+            savedKeys.push(key);
+        }
+
+        console.log(`[Admin] Settings updated: ${savedKeys.join(', ')}`);
+        res.json({ message: 'Cập nhật cài đặt thành công', saved: savedKeys });
+    } catch (error) {
+        console.error('[Admin] Error saving settings:', error);
+        res.status(500).json({ message: 'Lỗi server khi lưu cài đặt' });
+    }
+});
+
+// Get specific setting
+router.get('/settings/:key', async (req, res) => {
+    try {
+        const setting = await db.query.settings.findFirst({
+            where: eq(settings.key, req.params.key),
+        });
+
+        res.json({ value: setting?.value || null });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== PAYMENT ACCOUNTS (BANKS) ====================
+
+// Get all payment accounts
+router.get('/payment-accounts', async (req, res) => {
+    try {
+        const result = await db.query.paymentAccounts.findMany({
+            orderBy: desc(paymentAccounts.id),
+        });
+        res.json({ data: result });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Create payment account
+router.post('/payment-accounts', async (req, res) => {
+    try {
+        const { bankName, accountNumber, accountName, merchantId, secretKey, description, image, isActive } = req.body;
+        
+        if (!bankName || !accountNumber || !accountName) {
+            return res.status(400).json({ message: 'Thiếu thông tin bắt buộc' });
+        }
+
+        const [newAccount] = await db.insert(paymentAccounts).values({
+            bankName,
+            accountNumber,
+            accountName,
+            merchantId,
+            secretKey,
+            description,
+            image,
+            isActive: isActive ?? true,
+        }).returning();
+
+        res.json({ message: 'Thêm tài khoản thành công', data: newAccount });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Update payment account
+router.patch('/payment-accounts/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const { bankName, accountNumber, accountName, merchantId, secretKey, description, image, isActive } = req.body;
+
+        const [updatedAccount] = await db.update(paymentAccounts)
+            .set({
+                bankName,
+                accountNumber,
+                accountName,
+                merchantId,
+                secretKey,
+                description,
+                image,
+                isActive,
+                updatedAt: new Date().toISOString(),
+            })
+            .where(eq(paymentAccounts.id, id))
+            .returning();
+
+        if (!updatedAccount) {
+            return res.status(404).json({ message: 'Không tìm thấy tài khoản' });
+        }
+
+        res.json({ message: 'Cập nhật thành công', data: updatedAccount });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Delete payment account
+router.delete('/payment-accounts/:id', async (req, res) => {
+    try {
+        const id = parseInt(req.params.id);
+        const result = await db.delete(paymentAccounts)
+            .where(eq(paymentAccounts.id, id))
+            .returning();
+
+        if (result.length === 0) {
+            return res.status(404).json({ message: 'Không tìm thấy tài khoản' });
+        }
+
+        res.json({ message: 'Xóa tài khoản thành công' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// ==================== USERS ====================
+
+router.get('/users', async (req, res) => {
+    try {
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+        const search = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+        const whereClause = search
+            ? or(
+                like(users.name, `%${search}%`),
+                like(users.email, `%${search}%`)
+            )
+            : undefined;
+
+        const countResult = await db.select({ count: sql`count(*)` })
+            .from(users)
+            .where(whereClause);
+        const total = Number(countResult[0]?.count || 0);
+
+        const result = await db.query.users.findMany({
+            where: whereClause,
+            orderBy: desc(users.id),
+            limit,
+            offset,
+        });
+
+        // Remove password from response
+        const safeUsers = result.map(u => ({
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            role: u.role,
+            balance: u.balance,
+            createdAt: u.createdAt,
+        }));
+
+        res.json({ 
+            data: safeUsers,
+            pagination: {
+                total,
+                page,
+                limit,
+                totalPages: Math.ceil(total / limit)
+            }
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Get user specific transactions (Balance fluctuations)
+router.get('/users/:id/transactions', async (req, res) => {
+    try {
+        const userId = parseInt(req.params.id);
+        const result = await db.query.transactions.findMany({
+            where: eq(transactions.userId, userId),
+            orderBy: desc(transactions.id),
+            limit: 100
+        });
+        res.json({ data: result });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.get('/users/:id', async (req, res) => {
+    try {
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, parseInt(req.params.id)),
+        });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        res.json({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            role: user.role,
+            balance: user.balance,
+            createdAt: user.createdAt,
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Reset a specific user's password. The plaintext password is never returned or stored.
+router.put('/users/:id/password', async (req, res) => {
+    try {
+        const userId = parseInt(req.params.id, 10);
+        const password = typeof req.body.password === 'string' ? req.body.password : '';
+
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return res.status(400).json({ message: 'ID người dùng không hợp lệ' });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ message: 'Mật khẩu mới phải có ít nhất 6 ký tự' });
+        }
+
+        const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+        if (!user) {
+            return res.status(404).json({ message: 'Không tìm thấy người dùng' });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await db.update(users)
+            .set({ password: hashedPassword, updatedAt: new Date().toISOString() })
+            .where(eq(users.id, userId));
+
+        res.json({ message: 'Đặt lại mật khẩu thành công' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.put('/users/:id', async (req: AuthRequest, res) => {
+    try {
+        const { name, email, role, addBalance } = req.body;
+        const userId = parseInt(req.params.id);
+
+        // Don't allow admin to change their own role
+        if (req.user?.id === userId && role !== undefined) {
+            return res.status(400).json({ message: 'Không thể thay đổi role của chính mình' });
+        }
+
+        // Get current user for balance calculation
+        const currentUser = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+        });
+
+        if (!currentUser) {
+            return res.status(404).json({ message: 'Không tìm thấy người dùng' });
+        }
+
+        // Check if new email is already used by another user
+        if (email !== undefined && email !== currentUser.email) {
+            const existingUser = await db.query.users.findFirst({
+                where: and(
+                    eq(users.email, email),
+                    sql`${users.id} != ${userId}`
+                ),
+            });
+
+            if (existingUser) {
+                return res.status(400).json({ message: 'Email đã được sử dụng' });
+            }
+        }
+
+        const updateData: any = {};
+        if (name !== undefined) updateData.name = name;
+        if (email !== undefined) updateData.email = email;
+        if (role !== undefined) updateData.role = role;
+
+        // Add to balance instead of overwriting
+        if (addBalance !== undefined && addBalance !== 0) {
+            const amount = parseFloat(addBalance);
+            updateData.balance = currentUser.balance + amount;
+
+            // Create transaction record for the balance change
+            await db.insert(transactions).values({
+                userId: userId,
+                type: amount > 0 ? 'deposit' : 'purchase',
+                amount: Math.abs(amount),
+                balanceBefore: currentUser.balance,
+                balanceAfter: currentUser.balance + amount,
+                status: 'completed',
+                description: amount > 0 ? 'Admin cộng số dư' : 'Admin trừ số dư',
+            });
+        }
+
+        await db.update(users)
+            .set(updateData)
+            .where(eq(users.id, userId));
+
+        const user = await db.query.users.findFirst({
+            where: eq(users.id, userId),
+        });
+
+        res.json({
+            message: 'Cập nhật thành công',
+            user: {
+                id: user!.id,
+                name: user!.name,
+                email: user!.email,
+                role: user!.role,
+                balance: user!.balance,
+            },
+        });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+router.delete('/users/:id', async (req: AuthRequest, res) => {
+    try {
+        const userId = parseInt(req.params.id);
+
+        // Don't allow admin to delete themselves
+        if (req.user?.id === userId) {
+            return res.status(400).json({ message: 'Không thể xóa tài khoản của chính mình' });
+        }
+
+        await db.delete(users).where(eq(users.id, userId));
+        res.json({ message: 'Đã xóa người dùng' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
+// Web Push - Test Notification
+router.post('/test-push', adminMiddleware, async (req: AuthRequest, res) => {
+    try {
+        await PushService.notifyAdmin({
+            title: '🔔 Thông báo thử nghiệm',
+            body: 'Nếu bạn thấy dòng này, hệ thống thông báo đẩy đã hoạt động!',
+            icon: '/logo.png',
+            data: { url: '/admin' }
+        });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false });
+    }
+});
+
+// Telegram - Test Notification
+router.post('/test-telegram', adminMiddleware, async (req: AuthRequest, res) => {
+    try {
+        await TelegramService.sendMessage('🔔 <b>THÔNG BÁO THỬ NGHIỆM</b>\n\nNếu bạn thấy tin nhắn này, hệ thống Telegram Bot đã hoạt động chính xác!');
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ success: false });
+    }
+});
+
+export default router;
