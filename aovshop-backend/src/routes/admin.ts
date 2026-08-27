@@ -338,7 +338,8 @@ router.post('/products/:id/accounts', async (req, res) => {
         // Deduplicate within the uploaded list itself
         const uniqueInputList = [...new Set(rawAccountList)] as string[];
 
-        // Check which accounts already exist in the system (product_accounts table)
+        // Check which accounts already exist in this product only.
+        // The same account data may be stocked in a different product.
         // Chunk query to avoid exceeding SQLite/LibSQL parameter limits
         const existingSet = new Set<string>();
         const CHUNK_SIZE = 500;
@@ -346,7 +347,10 @@ router.post('/products/:id/accounts', async (req, res) => {
             const chunk = uniqueInputList.slice(i, i + CHUNK_SIZE);
             const foundAccounts = await db.select({ data: productAccounts.data })
                 .from(productAccounts)
-                .where(inArray(productAccounts.data, chunk));
+                .where(and(
+                    eq(productAccounts.productId, productId),
+                    inArray(productAccounts.data, chunk)
+                ));
 
             for (const item of foundAccounts) {
                 existingSet.add(item.data);
@@ -396,9 +400,9 @@ router.post('/products/:id/accounts', async (req, res) => {
         let message = `Đã thêm ${addedCount} tài khoản thành công`;
         if (duplicateCount > 0) {
             if (addedCount === 0) {
-                message = `Tất cả ${duplicateCount} tài khoản đều đã tồn tại trong hệ thống hoặc bị trùng (đã bỏ qua)`;
+                message = `Tất cả ${duplicateCount} tài khoản đều đã tồn tại trong sản phẩm này hoặc bị trùng trong danh sách (đã bỏ qua)`;
             } else {
-                message = `Đã thêm mới ${addedCount} tài khoản, phát hiện ${duplicateCount} tài khoản bị trùng (đã bỏ qua)`;
+                message = `Đã thêm mới ${addedCount} tài khoản, bỏ qua ${duplicateCount} tài khoản đã có trong sản phẩm này hoặc bị trùng trong danh sách`;
             }
         }
 
