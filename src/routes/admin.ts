@@ -325,35 +325,58 @@ router.post('/products/:id/accounts', async (req, res) => {
         }
 
         // Handle both string (multi-line) and array
-        const rawAccountList = typeof accounts === 'string'
+        const rawAccountList: string[] = typeof accounts === 'string'
             ? accounts.split('\n').map(line => line.trim()).filter(line => line.length > 0)
-            : accounts;
+            : Array.isArray(accounts)
+                ? accounts.map((line: any) => typeof line === 'string' ? line.trim() : '').filter((line: string) => line.length > 0)
+                : [];
 
         if (rawAccountList.length === 0) {
             return res.status(400).json({ message: 'Danh sách tài khoản trống' });
         }
 
         // Deduplicate within the uploaded list itself
-        const accountList = [...new Set(rawAccountList)] as string[];
+        const uniqueInputList = [...new Set(rawAccountList)] as string[];
 
-        // Plain INSERT — no duplicate check, no reads.
-        // UNIQUE constraint on `data` is the safety net if a duplicate somehow arrives.
-        const values = accountList.map((data: string) => ({
-            productId,
-            data,
-            status: 'available' as const,
-        }));
+        // Check which accounts already exist in the system (product_accounts table)
+        // Chunk query to avoid exceeding SQLite/LibSQL parameter limits
+        const existingSet = new Set<string>();
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < uniqueInputList.length; i += CHUNK_SIZE) {
+            const chunk = uniqueInputList.slice(i, i + CHUNK_SIZE);
+            const foundAccounts = await db.select({ data: productAccounts.data })
+                .from(productAccounts)
+                .where(inArray(productAccounts.data, chunk));
 
-        // Chunk insertion to avoid hitting SQLite/LibSQL variables limit (max 999 or 32766 parameters)
-        // Uses db.batch() to send all insert queries in a single HTTP request to Turso database
-        const BATCH_SIZE = 250;
-        const batchQueries = [];
-        for (let i = 0; i < values.length; i += BATCH_SIZE) {
-            const batch = values.slice(i, i + BATCH_SIZE);
-            batchQueries.push(db.insert(productAccounts).values(batch));
+            for (const item of foundAccounts) {
+                existingSet.add(item.data);
+            }
         }
-        if (batchQueries.length > 0) {
-            await db.batch(batchQueries as [any, ...any[]]);
+
+        // Filter out accounts that already exist in the system
+        const accountsToInsert = uniqueInputList.filter(acc => !existingSet.has(acc));
+
+        const addedCount = accountsToInsert.length;
+        const duplicateCount = rawAccountList.length - addedCount;
+
+        if (accountsToInsert.length > 0) {
+            const values = accountsToInsert.map((data: string) => ({
+                productId,
+                data,
+                status: 'available' as const,
+            }));
+
+            // Chunk insertion to avoid hitting SQLite/LibSQL variables limit (max 999 or 32766 parameters)
+            // Uses db.batch() to send all insert queries in a single HTTP request to Turso database
+            const BATCH_SIZE = 250;
+            const batchQueries = [];
+            for (let i = 0; i < values.length; i += BATCH_SIZE) {
+                const batch = values.slice(i, i + BATCH_SIZE);
+                batchQueries.push(db.insert(productAccounts).values(batch));
+            }
+            if (batchQueries.length > 0) {
+                await db.batch(batchQueries as [any, ...any[]]);
+            }
         }
 
         // Update product stock
@@ -364,14 +387,27 @@ router.post('/products/:id/accounts', async (req, res) => {
                 eq(productAccounts.status, 'available')
             ));
 
+        const newStock = Number(remainingCount[0]?.count || 0);
+
         await db.update(products)
-            .set({ stock: Number(remainingCount[0]?.count || 0) })
+            .set({ stock: newStock })
             .where(eq(products.id, productId));
 
+        let message = `Đã thêm ${addedCount} tài khoản thành công`;
+        if (duplicateCount > 0) {
+            if (addedCount === 0) {
+                message = `Tất cả ${duplicateCount} tài khoản đều đã tồn tại trong hệ thống hoặc bị trùng (đã bỏ qua)`;
+            } else {
+                message = `Đã thêm mới ${addedCount} tài khoản, phát hiện ${duplicateCount} tài khoản bị trùng (đã bỏ qua)`;
+            }
+        }
+
         res.json({
-            message: `Đã thêm ${accountList.length} tài khoản thành công`,
-            added: accountList.length,
-            stock: Number(remainingCount[0]?.count || 0),
+            message,
+            added: addedCount,
+            duplicates: duplicateCount,
+            total: rawAccountList.length,
+            stock: newStock,
         });
     } catch (error) {
         console.error(error);
