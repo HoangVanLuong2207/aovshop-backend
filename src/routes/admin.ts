@@ -1206,8 +1206,16 @@ router.get('/settings', async (req, res) => {
 
 router.post('/settings', async (req, res) => {
     try {
-        const settingsData = req.body;
+        const settingsData = { ...req.body };
         const savedKeys = [];
+
+        if (Object.prototype.hasOwnProperty.call(settingsData, 'minimum_deposit_amount')) {
+            const minimumDepositAmount = Number(settingsData.minimum_deposit_amount);
+            if (!Number.isSafeInteger(minimumDepositAmount) || minimumDepositAmount < 1) {
+                return res.status(400).json({ message: 'Số tiền nạp tối thiểu phải là số nguyên lớn hơn 0' });
+            }
+            settingsData.minimum_deposit_amount = String(minimumDepositAmount);
+        }
 
         // Define keys we want to exclude (metadata from previous GET requests)
         const excludeKeys = ['id', 'updated_at', 'updatedAt', 'description', 'created_at', 'createdAt'];

@@ -280,6 +280,26 @@
     <div class="settings-section">
       <h2>💳 Danh sách tài khoản ngân hàng</h2>
       <p class="section-desc">Cấu hình các tài khoản ngân hàng để khách hàng chuyển khoản nạp tiền.</p>
+
+      <form @submit.prevent="saveSettings" class="settings-form deposit-settings-form">
+        <div class="form-group">
+          <label>Số tiền nạp tối thiểu (VNĐ)</label>
+          <input
+            v-model.number="settings.minimum_deposit_amount"
+            type="number"
+            class="form-input"
+            min="1"
+            step="1"
+            required
+          />
+          <small>Khách hàng không thể tạo đơn nạp thấp hơn số tiền này.</small>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" :disabled="saving">
+            {{ saving ? 'Đang lưu...' : '💾 Lưu mức nạp tối thiểu' }}
+          </button>
+        </div>
+      </form>
       
       <div class="payment-accounts-list">
         <div v-for="account in paymentAccountsList" :key="account.id" class="account-card">
@@ -440,6 +460,7 @@ const settings = ref({
   brevo_api_key: '',
   brevo_sender_email: '',
   google_client_id: '',
+  minimum_deposit_amount: 10000,
 })
 
 const showToken = ref(false)
@@ -482,6 +503,9 @@ const loadSettings = async () => {
         // Handle special type conversions
         if (key === 'notification_enabled' || key === 'push_enabled') {
           filteredData[key] = data[key] === 'true' || data[key] === true
+        } else if (key === 'minimum_deposit_amount') {
+          const parsedAmount = Number(data[key])
+          filteredData[key] = Number.isInteger(parsedAmount) && parsedAmount > 0 ? parsedAmount : 10000
         } else {
           filteredData[key] = data[key]
         }

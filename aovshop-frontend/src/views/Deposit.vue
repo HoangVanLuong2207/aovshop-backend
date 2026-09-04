@@ -20,20 +20,20 @@
           <div class="card-header">Tạo đơn nạp tiền</div>
           <div class="card-body">
             <div class="form-group">
-              <label class="form-label">Số tiền (tối thiểu 10,000đ)</label>
+              <label class="form-label">Số tiền (tối thiểu {{ formatPrice(minimumDepositAmount) }})</label>
               <input 
                 v-model.number="amount" 
                 type="number" 
                 class="form-input" 
                 placeholder="Nhập số tiền..."
-                min="10000"
-                step="1000"
+                :min="minimumDepositAmount"
+                step="1"
               />
             </div>
 
             <div class="quick-amounts">
               <button 
-                v-for="amt in quickAmounts" 
+                v-for="amt in availableQuickAmounts"
                 :key="amt" 
                 class="btn btn-secondary btn-sm"
                 @click="amount = amt"
@@ -42,14 +42,14 @@
               </button>
             </div>
 
-            <div v-if="amount && amount < 10000" class="error-message">
-              ⚠️ Số tiền tối thiểu là 10,000đ
+            <div v-if="amount && amount < minimumDepositAmount" class="error-message">
+              ⚠️ Số tiền tối thiểu là {{ formatPrice(minimumDepositAmount) }}
             </div>
 
             <button 
               class="btn btn-primary btn-lg create-btn"
               @click="createOrder"
-              :disabled="!amount || amount < 10000 || creating"
+              :disabled="depositConfigLoading || !amount || amount < minimumDepositAmount || creating"
             >
               {{ creating ? 'Đang tạo...' : '📋 Tạo đơn nạp tiền' }}
             </button>
@@ -269,9 +269,16 @@ const perPage = 10
 const showPaymentModal = ref(false)
 const activeBanks = ref([])
 const selectedBank = ref(null)
+const minimumDepositAmount = ref(10000)
+const depositConfigLoading = ref(true)
 let pollInterval = null
 
 const quickAmounts = [50000, 100000, 200000, 500000, 1000000]
+const availableQuickAmounts = computed(() => {
+  return [...new Set([minimumDepositAmount.value, ...quickAmounts])]
+    .filter(value => value >= minimumDepositAmount.value)
+    .sort((a, b) => a - b)
+})
 
 const formatPrice = (price) => {
   return new Intl.NumberFormat('vi-VN', {
@@ -356,6 +363,20 @@ const fetchBanks = async () => {
   }
 }
 
+const fetchDepositConfig = async () => {
+  try {
+    const response = await api.get('/deposit/config')
+    const configuredAmount = Number(response.data?.minimum_deposit_amount)
+    if (Number.isInteger(configuredAmount) && configuredAmount > 0) {
+      minimumDepositAmount.value = configuredAmount
+    }
+  } catch (error) {
+    console.error('Failed to fetch deposit config:', error)
+  } finally {
+    depositConfigLoading.value = false
+  }
+}
+
 const selectBank = (bank) => {
   selectedBank.value = bank
 }
@@ -415,7 +436,7 @@ const checkStatus = async () => {
 }
 
 const createOrder = async () => {
-  if (!amount.value || amount.value < 10000) return
+  if (!amount.value || amount.value < minimumDepositAmount.value) return
   
   creating.value = true
   try {
@@ -461,6 +482,7 @@ onMounted(() => {
   authStore.fetchProfile()
   loadTransactions()
   fetchBanks()
+  fetchDepositConfig()
 })
 
 onUnmounted(() => {
