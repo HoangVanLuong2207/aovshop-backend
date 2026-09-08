@@ -42,7 +42,7 @@
                   <button @click="incrementQuantity" :disabled="!isUnlimited && quantity >= product.stock">+</button>
                 </div>
                 <div class="main-actions">
-                  <button 
+                  <button v-if="!isCheckpass"
                     class="btn btn-secondary add-to-cart-btn" 
                     @click="addToCart"
                     :disabled="!isUnlimited && product.stock === 0"

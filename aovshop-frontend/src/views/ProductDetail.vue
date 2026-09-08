@@ -102,11 +102,7 @@
               ⏳ Đặt trước
             </div>
 
-            <div v-else-if="isCheckpass" class="preorder-badge-inline">
-              🔑 Key tự cấp sau thanh toán
-            </div>
-
-            <button v-if="!isPreorder"
+            <button v-if="!isPreorder && !isCheckpass"
               class="btn btn-secondary btn-lg" 
               @click="addToCart"
               :disabled="!isCheckpass && product.stock === 0"
