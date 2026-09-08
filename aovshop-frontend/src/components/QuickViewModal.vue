@@ -39,20 +39,20 @@
                 <div class="quantity-selector">
                   <button @click="decrementQuantity" :disabled="quantity <= 1">-</button>
                   <span>{{ quantity }}</span>
-                  <button @click="incrementQuantity" :disabled="!product.is_preorder && quantity >= product.stock">+</button>
+                  <button @click="incrementQuantity" :disabled="!isUnlimited && quantity >= product.stock">+</button>
                 </div>
                 <div class="main-actions">
                   <button 
                     class="btn btn-secondary add-to-cart-btn" 
                     @click="addToCart"
-                    :disabled="!product.is_preorder && product.stock === 0"
+                    :disabled="!isUnlimited && product.stock === 0"
                   >
                     🛒 Thêm giỏ
                   </button>
                   <button 
                     class="btn btn-primary buy-now-btn" 
                     @click="buyNow"
-                    :disabled="!product.is_preorder && product.stock === 0"
+                    :disabled="!isUnlimited && product.stock === 0"
                   >
                     {{ product.is_preorder ? '📦 Đặt trước' : '⚡ Mua ngay' }}
                   </button>
@@ -94,6 +94,8 @@ const quantity = ref(1)
 
 const currentPrice = computed(() => props.product.sale_price || props.product.price)
 const isOnSale = computed(() => props.product.sale_price && props.product.sale_price < props.product.price)
+const isCheckpass = computed(() => Number(props.product.checkpass_hours ?? props.product.checkpassHours ?? 0) > 0)
+const isUnlimited = computed(() => props.product.is_preorder || isCheckpass.value)
 const discountPercent = computed(() => {
   if (!isOnSale.value) return 0
   return Math.round((1 - props.product.sale_price / props.product.price) * 100)
@@ -101,13 +103,14 @@ const discountPercent = computed(() => {
 
 const stockClass = computed(() => ({
   'text-preorder': props.product.is_preorder,
-  'text-success': !props.product.is_preorder && props.product.stock > 10,
-  'text-warning': !props.product.is_preorder && props.product.stock > 0 && props.product.stock <= 10,
-  'text-danger': !props.product.is_preorder && props.product.stock === 0,
+  'text-success': isCheckpass.value || (!props.product.is_preorder && props.product.stock > 10),
+  'text-warning': !isUnlimited.value && props.product.stock > 0 && props.product.stock <= 10,
+  'text-danger': !isUnlimited.value && props.product.stock === 0,
 }))
 
 const stockText = computed(() => {
   if (props.product.is_preorder) return 'Đặt trước'
+  if (isCheckpass.value) return 'Key tự cấp'
   if (props.product.stock === 0) return 'Hết hàng'
   if (props.product.stock <= 10) return `Còn ${props.product.stock}`
   return 'Còn hàng'
@@ -121,7 +124,7 @@ const formatPrice = (price) => {
 }
 
 const incrementQuantity = () => {
-  if (props.product.is_preorder || quantity.value < props.product.stock) {
+  if (isUnlimited.value || quantity.value < props.product.stock) {
     quantity.value++
   }
 }

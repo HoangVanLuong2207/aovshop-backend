@@ -8,6 +8,22 @@ import { TelegramService } from '../services/telegram.js';
 
 const router = Router();
 
+const CHECKPASS_URL = (process.env.CHECKPASS_URL || 'https://check.sp1s.shop').replace(/\/$/, '');
+
+async function issueCheckpassKey(orderId: number, productId: number, durationHours: number, customerEmail?: string) {
+    const licenseServerUrl = (process.env.LICENSE_SERVER_URL || '').replace(/\/$/, '');
+    const issuerToken = process.env.LICENSE_SERVER_ISSUER_TOKEN || '';
+    if (!licenseServerUrl || !issuerToken) throw new Error('Chưa cấu hình LICENSE_SERVER_URL hoặc LICENSE_SERVER_ISSUER_TOKEN');
+    const response = await fetch(`${licenseServerUrl}/api/integrations/aovshop/checkpass-keys`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AOVShop-Issuer-Token': issuerToken },
+        body: JSON.stringify({ order_id: orderId, product_id: productId, duration_hours: durationHours, customer_email: customerEmail || undefined }),
+        signal: AbortSignal.timeout(10_000),
+    });
+    const body: any = await response.json().catch(() => ({}));
+    if (!response.ok || !body.key || !body.expires_at) throw new Error(body.detail || body.message || `License Server trả lỗi HTTP ${response.status}`);
+    return { key: String(body.key), expiresAt: String(body.expires_at), url: `${CHECKPASS_URL}/?key=${encodeURIComponent(String(body.key))}` };
+}
+
 const parsePromotionProductIds = (raw: string | null) => {
     if (!raw) return [];
     try {
@@ -226,7 +242,10 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 });
             }
 
-            if (product.isPreorder) {
+            const checkpassHours = Number(product.checkpassHours || 0);
+            if (checkpassHours > 0) {
+                isAllPreorder = false;
+            } else if (product.isPreorder) {
                 hasPreorder = true;
             } else {
                 isAllPreorder = false;
@@ -375,7 +394,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             });
 
             // Only manage accounts for instant (non-preorder) items
-            if (!item.product.isPreorder) {
+            if (!item.product.isPreorder && !item.product.checkpassHours) {
                 const productAccountsToLink = allTargetAccounts
                     .filter(acc => acc.productId === item.product.id)
                     .slice(0, item.quantity);
@@ -411,6 +430,23 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                         soldCount: sql`${products.soldCount} + ${item.quantity}`
                     })
                     .where(eq(products.id, item.product.id));
+            }
+        }
+
+        const checkpassItems = orderProducts.filter((item: any) => Number(item.product.checkpassHours || 0) > 0);
+        if (checkpassItems.length > 0) {
+            const durationHours = checkpassItems.reduce((total: number, item: any) => total + Number(item.product.checkpassHours) * item.quantity, 0);
+            try {
+                const license = await issueCheckpassKey(order.id, checkpassItems[0].product.id, durationHours, user.email);
+                const deliveryData = JSON.stringify({ type: 'checkpass_license', key: license.key, expires_at: license.expiresAt, url: license.url, duration_hours: durationHours });
+                await db.update(orders).set({ deliveryData, deliveredAt: new Date().toISOString() }).where(eq(orders.id, order.id));
+                order.deliveryData = deliveryData;
+                order.deliveredAt = new Date().toISOString();
+            } catch (issueError) {
+                console.error(`[Checkpass license] Could not issue key for order #${order.id}:`, issueError);
+                const deliveryData = JSON.stringify({ type: 'checkpass_pending', error: 'Đang cấp key, vui lòng liên hệ hỗ trợ nếu chưa nhận được.' });
+                await db.update(orders).set({ deliveryData }).where(eq(orders.id, order.id));
+                order.deliveryData = deliveryData;
             }
         }
 

@@ -57,7 +57,7 @@
 
           <div class="product-meta-lg">
             <div class="product-stock-status">
-              <span class="stock-dot" :class="isPreorder ? 'bg-preorder' : (product?.stock > 0 ? 'bg-success' : 'bg-danger')"></span>
+              <span class="stock-dot" :class="isPreorder ? 'bg-preorder' : (isCheckpass || product?.stock > 0 ? 'bg-success' : 'bg-danger')"></span>
               <span :class="stockClass">{{ stockText }}</span>
             </div>
             <div class="product-sold-lg">
@@ -93,19 +93,23 @@
                 @input="onQuantityInput"
                 @blur="onQuantityBlur"
                 :min="minimumQuantity"
-                :max="isPreorder ? 9999 : product.stock"
+                :max="isUnlimited ? 9999 : product.stock"
               />
-              <button @click="isPreorder ? quantity++ : quantity = Math.min(product.stock, quantity + 1)">+</button>
+              <button @click="isUnlimited ? quantity++ : quantity = Math.min(product.stock, quantity + 1)">+</button>
             </div>
 
             <div v-if="isPreorder" class="preorder-badge-inline">
               ⏳ Đặt trước
             </div>
 
+            <div v-else-if="isCheckpass" class="preorder-badge-inline">
+              🔑 Key tự cấp sau thanh toán
+            </div>
+
             <button v-if="!isPreorder"
               class="btn btn-secondary btn-lg" 
               @click="addToCart"
-              :disabled="product.stock === 0"
+              :disabled="!isCheckpass && product.stock === 0"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px;"><circle cx="8" cy="21" r="1"></circle><circle cx="19" cy="21" r="1"></circle><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"></path></svg>
               Thêm vào giỏ
@@ -114,7 +118,7 @@
             <button 
               class="btn btn-primary btn-lg" 
               @click="buyNow"
-              :disabled="!isPreorder && product.stock === 0"
+              :disabled="!isUnlimited && product.stock === 0"
             >
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 8px;"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
               {{ isPreorder ? '📦 Đặt trước ngay' : 'Mua ngay' }}
@@ -160,7 +164,7 @@ const onQuantityInput = (event) => {
   if (isNaN(num) || num < minimumQuantity.value) {
     num = minimumQuantity.value
   }
-  const maxStock = isPreorder.value ? 9999 : (product.value?.stock || 9999)
+  const maxStock = isUnlimited.value ? 9999 : (product.value?.stock || 9999)
   if (num > maxStock) {
     num = maxStock
     event.target.value = maxStock
@@ -174,7 +178,7 @@ const onQuantityBlur = (event) => {
   if (isNaN(num) || num < minimumQuantity.value) {
     num = minimumQuantity.value
   }
-  const maxStock = isPreorder.value ? 9999 : (product.value?.stock || 9999)
+  const maxStock = isUnlimited.value ? 9999 : (product.value?.stock || 9999)
   if (num > maxStock) {
     num = maxStock
   }
@@ -216,11 +220,13 @@ const nextImage = () => {
 
 const currentPrice = computed(() => product.value?.sale_price || product.value?.price)
 const isOnSale = computed(() => product.value?.sale_price && product.value.sale_price < product.value.price)
+const isCheckpass = computed(() => Number(product.value?.checkpass_hours ?? product.value?.checkpassHours ?? 0) > 0)
+const isUnlimited = computed(() => isPreorder.value || isCheckpass.value)
 
 const stockClass = computed(() => ({
-  'text-success': product.value?.stock > 10,
-  'text-warning': product.value?.stock > 0 && product.value?.stock <= 10,
-  'text-danger': !product.value?.is_preorder && product.value?.stock === 0,
+  'text-success': isCheckpass.value || product.value?.stock > 10,
+  'text-warning': !isUnlimited.value && product.value?.stock > 0 && product.value?.stock <= 10,
+  'text-danger': !isUnlimited.value && product.value?.stock === 0,
   'text-preorder': product.value?.is_preorder,
 }))
 
@@ -229,6 +235,7 @@ const isPreorder = computed(() => product.value?.is_preorder || false)
 const stockText = computed(() => {
   if (!product.value) return ''
   if (product.value.is_preorder) return 'Sản phẩm đặt trước'
+  if (isCheckpass.value) return 'Key Checkpass tự cấp'
   if (product.value.stock === 0) return 'Hết hàng'
   if (product.value.stock <= 10) return `Số lượng có hạn: ${product.value.stock}`
   return `Còn hàng (${product.value.stock})`

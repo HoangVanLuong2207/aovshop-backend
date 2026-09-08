@@ -206,6 +206,7 @@ const mapProduct = (p: any) => ({
     preorder_placeholder: p.preorderPlaceholder,
     daily_buy_limit: p.dailyBuyLimit || null,
     minimum_order_quantity: p.minimumOrderQuantity || null,
+    checkpass_hours: p.checkpassHours || null,
     created_at: p.createdAt,
     category: p.category,
 });

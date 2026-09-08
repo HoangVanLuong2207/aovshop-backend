@@ -33,13 +33,13 @@
                 @input="onQuantityInput(item, $event)"
                 @blur="onQuantityBlur(item, $event)"
                 :min="minimumQuantity(item)"
-                :max="item.is_preorder ? 9999 : item.stock"
+                :max="isUnlimited(item) ? 9999 : item.stock"
                 class="quantity-input"
               />
               <button 
                 @click="updateQuantity(item.id, item.quantity + 1, item.stock)"
-                :disabled="!item.is_preorder && item.quantity >= item.stock"
-                :title="!item.is_preorder && item.quantity >= item.stock ? 'Đã đạt giới hạn kho' : ''"
+                :disabled="!isUnlimited(item) && item.quantity >= item.stock"
+                :title="!isUnlimited(item) && item.quantity >= item.stock ? 'Đã đạt giới hạn kho' : ''"
               >+</button>
             </div>
             <div class="cart-item-total">
@@ -81,6 +81,7 @@ const { confirm } = useToast()
 const cartStore = useCartStore()
 
 const minimumQuantity = (item) => Math.max(1, Number(item.minimum_order_quantity) || 1)
+const isUnlimited = (item) => item.is_preorder || item.is_checkpass
 
 const formatPrice = (price) => {
   return new Intl.NumberFormat('vi-VN', {
@@ -104,7 +105,7 @@ const onQuantityInput = (item, event) => {
   if (isNaN(num) || num < minimumQuantity(item)) {
     num = minimumQuantity(item)
   }
-  const maxStock = item.is_preorder ? 9999 : (item.stock || 9999)
+  const maxStock = isUnlimited(item) ? 9999 : (item.stock || 9999)
   if (num > maxStock) {
     num = maxStock
     event.target.value = maxStock
@@ -118,7 +119,7 @@ const onQuantityBlur = (item, event) => {
   if (isNaN(num) || num < minimumQuantity(item)) {
     num = minimumQuantity(item)
   }
-  const maxStock = item.is_preorder ? 9999 : (item.stock || 9999)
+  const maxStock = isUnlimited(item) ? 9999 : (item.stock || 9999)
   if (num > maxStock) {
     num = maxStock
   }

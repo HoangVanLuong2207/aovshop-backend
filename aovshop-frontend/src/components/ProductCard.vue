@@ -43,6 +43,7 @@
       <span class="sale-text">FLASH SALE</span>
     </div>
     <div v-if="product.is_preorder" class="preorder-badge">ĐẶT TRƯỚC</div>
+    <div v-else-if="isCheckpass" class="preorder-badge">KEY CHECKPASS</div>
     <div v-else-if="isNew" class="new-badge">MỚI</div>
     
     <!-- Quick View Modal -->
@@ -90,13 +91,16 @@ const stockPercent = computed(() => {
 
 const stockClass = computed(() => ({
   'text-preorder': props.product.is_preorder,
-  'text-success': !props.product.is_preorder && props.product.stock > 10,
-  'text-warning': !props.product.is_preorder && props.product.stock > 0 && props.product.stock <= 10,
-  'text-danger': !props.product.is_preorder && props.product.stock === 0,
+  'text-success': isCheckpass.value || (!props.product.is_preorder && props.product.stock > 10),
+  'text-warning': !props.product.is_preorder && !isCheckpass.value && props.product.stock > 0 && props.product.stock <= 10,
+  'text-danger': !props.product.is_preorder && !isCheckpass.value && props.product.stock === 0,
 }))
+
+const isCheckpass = computed(() => Number(props.product.checkpass_hours ?? props.product.checkpassHours ?? 0) > 0)
 
 const stockText = computed(() => {
   if (props.product.is_preorder) return 'Đặt trước'
+  if (isCheckpass.value) return 'Key tự cấp'
   if (props.product.stock === 0) return 'Hết hàng'
   if (props.product.stock <= 10) return `Còn ${props.product.stock}`
   return 'Còn hàng'
