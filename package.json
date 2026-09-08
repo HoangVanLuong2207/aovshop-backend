@@ -11,7 +11,8 @@
         "db:migrate-push": "tsx src/db/migrate-push.ts",
         "db:migrate-daily-limit": "tsx src/db/migrate-daily-limit.ts",
         "db:migrate-minimum-order-quantity": "tsx src/db/migrate-minimum-order-quantity.ts",
-        "db:migrate-google-auth": "tsx src/db/migrate-google-auth.ts"
+        "db:migrate-google-auth": "tsx src/db/migrate-google-auth.ts",
+        "db:migrate-checkpass-hours": "tsx src/db/migrate-checkpass-hours.ts"
     },
     "dependencies": {
         "@libsql/client": "^0.14.0",

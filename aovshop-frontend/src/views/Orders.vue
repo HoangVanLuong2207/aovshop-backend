@@ -74,8 +74,21 @@
             <pre class="cnote-content">{{ order.customer_note }}</pre>
           </div>
 
+          <div v-if="isCheckpassLicense(order)" class="delivery-box">
+            <div class="delivery-header">🔑 Key Checkpass của bạn:</div>
+            <code class="delivery-content">{{ checkpassLicense(order).key }}</code>
+            <p class="delivery-time">⏳ Hết hạn: {{ formatDate(checkpassLicense(order).expires_at) }}</p>
+            <button class="btn btn-sm btn-secondary mt-2" @click="copyToClipboard(checkpassLicense(order).key)">📋 Copy key</button>
+            <a class="btn btn-sm btn-primary mt-2" :href="checkpassLicense(order).url">Mở Checkpass →</a>
+          </div>
+
+          <div v-else-if="isCheckpassPending(order)" class="delivery-box">
+            <div class="delivery-header">⏳ Key Checkpass đang được cấp</div>
+            <p>{{ checkpassLicense(order).error }}</p>
+          </div>
+
           <!-- Pre-order: delivery from admin -->
-          <div v-if="order.delivery_data" class="delivery-box">
+          <div v-else-if="order.delivery_data" class="delivery-box">
             <div class="delivery-header">📦 Hàng đã về - Thông tin giao:</div>
             <pre class="delivery-content">{{ order.delivery_data }}</pre>
             <button class="btn btn-sm btn-secondary mt-2" @click="copyToClipboard(order.delivery_data)">📋 Copy nội dung</button>
@@ -208,6 +221,18 @@ const changePage = (page) => {
   pagination.currentPage = page
   loadOrders()
 }
+
+const checkpassLicense = (order) => {
+  try {
+    const value = JSON.parse(order.delivery_data || '')
+    return value && typeof value === 'object' ? value : {}
+  } catch {
+    return {}
+  }
+}
+
+const isCheckpassLicense = (order) => checkpassLicense(order).type === 'checkpass_license'
+const isCheckpassPending = (order) => checkpassLicense(order).type === 'checkpass_pending'
 
 const accountPreview = (accounts) => accounts.slice(0, previewAccountLimit)
 

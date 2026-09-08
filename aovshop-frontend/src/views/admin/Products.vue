@@ -339,6 +339,13 @@
               Số lượng tối thiểu khách phải mua cho sản phẩm này trong mỗi lần đặt hàng. Để 0 hoặc trống = không áp dụng.
             </small>
           </div>
+          <div class="form-group">
+            <label class="form-label">⏱️ Gói Checkpass (số giờ)</label>
+            <input v-model.number="form.checkpass_hours" type="number" class="form-input" min="0" placeholder="0 = sản phẩm thường" />
+            <small class="text-muted d-block mt-1">
+              Nhập số giờ lớn hơn 0 để tự cấp key Checkpass sau khi thanh toán. Mỗi đơn chỉ nhận một key, thời hạn được cộng theo số lượng mua.
+            </small>
+          </div>
         </div>
         <div class="modal-footer">
           <button class="btn btn-secondary" @click="closeModal">Hủy</button>
@@ -401,6 +408,7 @@ const form = reactive({
   preorder_placeholder: '',
   daily_buy_limit: null,
   minimum_order_quantity: null,
+  checkpass_hours: null,
 })
 
 // Gallery image management
@@ -779,6 +787,7 @@ const openModal = (product = null) => {
       preorder_placeholder: product.preorderPlaceholder || '',
       daily_buy_limit: product.dailyBuyLimit || product.daily_buy_limit || null,
       minimum_order_quantity: product.minimumOrderQuantity || product.minimum_order_quantity || null,
+      checkpass_hours: product.checkpassHours || product.checkpass_hours || null,
     })
   } else {
     Object.assign(form, {
@@ -795,6 +804,7 @@ const openModal = (product = null) => {
       preorder_placeholder: '',
       daily_buy_limit: null,
       minimum_order_quantity: null,
+      checkpass_hours: null,
     })
   }
   newImageUrl.value = ''
@@ -836,6 +846,7 @@ const saveProduct = async () => {
       preorder_placeholder: form.preorder_placeholder,
       daily_buy_limit: form.daily_buy_limit || null,
       minimum_order_quantity: form.minimum_order_quantity || null,
+      checkpass_hours: form.checkpass_hours || null,
     }
 
     if (editing.value) {
