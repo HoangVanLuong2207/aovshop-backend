@@ -7,6 +7,7 @@ export const users = sqliteTable('users', {
     name: text('name').notNull(),
     email: text('email').notNull().unique(),
     password: text('password').notNull(),
+    tokenVersion: integer('token_version').default(0).notNull(),
     // Google subject identifier. It is immutable for a Google account, unlike email.
     googleId: text('google_id').unique(),
     role: text('role', { enum: ['admin', 'user'] }).default('user').notNull(),
@@ -47,6 +48,7 @@ export const products = sqliteTable('products', {
     preorderPlaceholder: text('preorder_placeholder'),
     dailyBuyLimit: integer('daily_buy_limit'), // NULL or 0 = no limit
     minimumOrderQuantity: integer('minimum_order_quantity'), // NULL or 0 = no minimum
+    // SQLite INTEGER affinity preserves fractional hours (e.g. 0.5); keep the existing column.
     checkpassHours: integer('checkpass_hours'),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
@@ -290,3 +292,10 @@ export const pushSubscriptions = sqliteTable('push_subscriptions', {
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 });
 
+
+// Provider event IDs are unique independently of the financial ledger.
+export const paymentWebhookEvents = sqliteTable('payment_webhook_events', {
+    id: text('id').primaryKey(),
+    depositId: integer('deposit_id').references(() => deposits.id).notNull(),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+});

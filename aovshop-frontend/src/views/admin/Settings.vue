@@ -63,7 +63,7 @@
               <span>📢</span>
               <strong>Thông báo</strong>
             </div>
-            <div class="preview-popup-content" v-html="settings.notification_text">
+            <div class="preview-popup-content" v-html="DOMPurify.sanitize(settings.notification_text, { USE_PROFILES: { html: true } })">
             </div>
           </div>
         </div>
@@ -425,6 +425,7 @@
 </template>
 
 <script setup>
+import DOMPurify from 'dompurify'
 import { ref, onMounted } from 'vue'
 import api from '../../api'
 import { useToast } from '../../composables/useToast'

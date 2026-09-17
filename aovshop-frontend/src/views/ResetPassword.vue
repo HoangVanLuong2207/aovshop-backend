@@ -29,9 +29,9 @@
               v-model="password" 
               type="password" 
               class="form-input" 
-              placeholder="Tối thiểu 6 ký tự"
+              placeholder="Tối thiểu 8 ký tự"
               required
-              minlength="6"
+              minlength="8"
             />
           </div>
 

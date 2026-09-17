@@ -37,7 +37,7 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
         }
 
         // 2. Otherwise, verify as JWT
-        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number; role?: string };
+        const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number; role?: string; tokenVersion?: number };
 
         // ENV and emergency administrators are not database users.
         if (decoded.role === 'admin' && (decoded.userId === ENV_ADMIN_ID || decoded.userId === SYSTEM_ADMIN_ID)) {
@@ -57,7 +57,7 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
             where: eq(users.id, decoded.userId),
         });
 
-        if (!user) {
+        if (!user || decoded.tokenVersion !== user.tokenVersion) {
             return res.status(401).json({ message: 'User not found' });
         }
 

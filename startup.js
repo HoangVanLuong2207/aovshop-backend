@@ -16,6 +16,7 @@ async function main() {
         // Run database migrations (--force skips interactive prompts on Render)
         console.log('📦 Running database migrations...');
         execSync('npx drizzle-kit push --force', { stdio: 'inherit' });
+        execSync('npx tsx src/db/migrate-security.ts', { stdio: 'inherit' });
         console.log('✅ Database migrations completed!');
 
         // Run push notification migration (adds VAPID keys if missing)
@@ -100,6 +101,7 @@ async function main() {
         if (error.message?.includes('no such table')) {
             console.log('📦 First run detected, running migrations...');
             execSync('npx drizzle-kit push --force', { stdio: 'inherit' });
+            execSync('npx tsx src/db/migrate-security.ts', { stdio: 'inherit' });
             execSync('npx tsx src/db/seed.ts', { stdio: 'inherit' });
             await import('./dist/index.js');
         } else {

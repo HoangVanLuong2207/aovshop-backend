@@ -93,7 +93,7 @@ function injectOgTags(html, product) {
         ? product.description.replace(/<[^>]*>/g, '').substring(0, 200)
         : `Mua ${product.name} tại AOV Shop - Uy tín, tự động 100%`;
     const description = escapeHtml(rawDesc);
-    const image = resolveProductImage(product);
+    const image = escapeHtml(resolveProductImage(product));
     const url = `https://shopregaov.shop/products/${product.id}`;
     const price = product.sale_price || product.price;
 

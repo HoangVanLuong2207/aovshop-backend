@@ -1,10 +1,12 @@
+import { randomBytes } from 'node:crypto';
+import { z } from 'zod';
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { OAuth2Client } from 'google-auth-library';
 import { db } from '../db/index.js';
 import { settings, users } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
 import { TelegramService } from '../services/telegram.js';
@@ -12,6 +14,12 @@ import { ENV_ADMIN_ID, getEnvAdminCredentials, getSpecialAdminProfile, normalize
 
 const router = Router();
 const googleClient = new OAuth2Client();
+const passwordSchema = z.string().min(8).refine(value => Buffer.byteLength(value, 'utf8') <= 72);
+const emailSchema = z.string().trim().toLowerCase().email().max(254);
+const issueUserToken = (user: typeof users.$inferSelect) => jwt.sign(
+    { userId: user.id, tokenVersion: user.tokenVersion }, process.env.JWT_SECRET!, { expiresIn: '7d' }
+);
+
 
 const publicUser = (user: typeof users.$inferSelect) => ({
     id: user.id,
@@ -41,7 +49,9 @@ router.get('/google-config', async (_req, res) => {
 // Register
 router.post('/register', async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        const parsed = z.object({ name: z.string().trim().min(1).max(100), email: emailSchema, password: passwordSchema }).safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ message: 'Tên, email hoặc mật khẩu không hợp lệ (mật khẩu tối thiểu 8 ký tự)' });
+        const { name, email, password } = parsed.data;
 
         // Check if email exists
         const existingUser = await db.query.users.findFirst({
@@ -93,7 +103,7 @@ router.post('/register', async (req, res) => {
         }
 
         // Generate token for immediate login
-        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+        const token = issueUserToken(user);
 
         res.json({
             message: 'Đăng ký thành công! Bạn có thể sử dụng shop ngay, nhưng nên xác thực email để bảo mật tài khoản.',
@@ -164,7 +174,7 @@ router.post('/login', async (req, res) => {
         }
         */
 
-        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+        const token = issueUserToken(user);
 
         res.json({
             message: 'Đăng nhập thành công',
@@ -208,10 +218,21 @@ router.post('/google', async (req, res) => {
             // existing password account can be safely linked on first Google login.
             user = await db.query.users.findFirst({ where: eq(users.email, email) });
             if (user) {
-                await db.update(users)
-                    .set({ googleId, emailVerified: true, updatedAt: new Date().toISOString() })
-                    .where(eq(users.id, user.id));
-                user = { ...user, googleId, emailVerified: true };
+                if (user.googleId && user.googleId !== googleId) {
+                    return res.status(409).json({ message: 'Tài khoản đã liên kết với Google khác' });
+                }
+                // An unverified password may have been chosen by someone else.
+                const password = user.emailVerified ? user.password : await bcrypt.hash(randomBytes(32).toString('hex'), 10);
+                const [linked] = await db.update(users)
+                    .set({ googleId, password, emailVerified: true,
+                        tokenVersion: sql`${users.tokenVersion} + 1`,
+                        verificationToken: null, verificationExpires: null,
+                        resetPasswordToken: null, resetPasswordExpires: null,
+                        updatedAt: new Date().toISOString() })
+                    .where(and(eq(users.id, user.id), eq(users.tokenVersion, user.tokenVersion)))
+                    .returning();
+                if (!linked) return res.status(409).json({ message: 'Tài khoản đã thay đổi, vui lòng thử lại' });
+                user = linked;
             } else {
                 const name = payload.name?.trim() || email.split('@')[0];
                 // Password is required by the legacy schema; this random hash
@@ -230,7 +251,7 @@ router.post('/google', async (req, res) => {
             }
         }
 
-        const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+        const token = issueUserToken(user);
         res.json({ message: 'ÄÄƒng nháº­p Google thÃ nh cÃ´ng', user: publicUser(user), token });
     } catch (error) {
         console.error('Google login error:', error);
@@ -239,7 +260,13 @@ router.post('/google', async (req, res) => {
 });
 
 // Logout
-router.post('/logout', authMiddleware, (req, res) => {
+router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
+    try {
+        if (req.user!.id > 0) await db.update(users)
+            .set({ tokenVersion: sql`${users.tokenVersion} + 1` }).where(eq(users.id, req.user!.id));
+    } catch {
+        return res.status(500).json({ message: 'Không thể đăng xuất, vui lòng thử lại' });
+    }
     res.json({ message: 'Đăng xuất thành công' });
 });
 
@@ -363,6 +390,9 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
 router.put('/password', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { current_password, password } = req.body;
+        if (typeof current_password !== 'string' || !passwordSchema.safeParse(password).success) {
+            return res.status(400).json({ message: 'Mật khẩu mới cần ít nhất 8 ký tự và không quá 72 byte' });
+        }
 
         if (getSpecialAdminProfile(req.user!.id)) {
             return res.status(403).json({ message: 'Không thể đổi mật khẩu admin hệ thống' });
@@ -378,9 +408,11 @@ router.put('/password', authMiddleware, async (req: AuthRequest, res) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        await db.update(users)
-            .set({ password: hashedPassword })
-            .where(eq(users.id, req.user!.id));
+        const changed = await db.update(users)
+            .set({ password: hashedPassword, tokenVersion: sql`${users.tokenVersion} + 1`, resetPasswordToken: null, resetPasswordExpires: null })
+            .where(and(eq(users.id, req.user!.id), eq(users.tokenVersion, user!.tokenVersion)))
+            .returning({ id: users.id });
+        if (changed.length !== 1) return res.status(409).json({ message: 'Tài khoản đã thay đổi, vui lòng đăng nhập lại' });
 
         res.json({ message: 'Đổi mật khẩu thành công' });
     } catch (error) {
@@ -524,6 +556,9 @@ router.post('/forgot-password', async (req, res) => {
 router.post('/reset-password', async (req, res) => {
     try {
         const { token, password } = req.body;
+        if (typeof token !== 'string' || !/^[a-zA-Z0-9]{64}$/.test(token) || !passwordSchema.safeParse(password).success) {
+            return res.status(400).json({ message: 'Token hoặc mật khẩu không hợp lệ' });
+        }
 
         const user = await db.query.users.findFirst({
             where: eq(users.resetPasswordToken, token),
@@ -534,7 +569,7 @@ router.post('/reset-password', async (req, res) => {
         }
 
         // Check if token expired
-        if (user.resetPasswordExpires && new Date(user.resetPasswordExpires) < new Date()) {
+        if (!user.resetPasswordExpires || !Number.isFinite(Date.parse(user.resetPasswordExpires)) || new Date(user.resetPasswordExpires) < new Date()) {
             return res.status(400).json({ message: 'Link đặt lại mật khẩu đã hết hạn' });
         }
 
@@ -542,13 +577,16 @@ router.post('/reset-password', async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
 
         // Update password and clear token
-        await db.update(users)
+        const changed = await db.update(users)
             .set({
                 password: hashedPassword,
+                tokenVersion: sql`${users.tokenVersion} + 1`,
                 resetPasswordToken: null,
                 resetPasswordExpires: null
             })
-            .where(eq(users.id, user.id));
+            .where(and(eq(users.id, user.id), eq(users.resetPasswordToken, token)))
+            .returning({ id: users.id });
+        if (changed.length !== 1) return res.status(400).json({ message: 'Link đã được sử dụng' });
 
         res.json({ message: 'Đặt lại mật khẩu thành công! Bạn có thể đăng nhập ngay.' });
     } catch (error) {

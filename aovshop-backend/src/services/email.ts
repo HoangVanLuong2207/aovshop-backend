@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 // Using Brevo HTTP API instead of SMTP
 // Render free tier blocks SMTP ports (587), so we use HTTP API (port 443)
 // Brevo credentials are read from DB settings (Admin Panel) with ENV fallback
@@ -45,7 +46,6 @@ async function getBrevoConfig() {
 export async function sendVerificationEmail({ to, name, token }: SendVerificationEmailParams): Promise<boolean> {
     const baseUrl = process.env.FRONTEND_URL?.replace(/\/$/, '') || 'http://localhost:5173';
     const verifyUrl = `${baseUrl}/verify-email/${token}`;
-    console.log(`\n--- [TESTING] Verification Link for ${to} ---\n${verifyUrl}\n-------------------------------------------\n`);
     const shopName = await getShopName();
 
     const htmlContent = `
@@ -124,12 +124,7 @@ export async function sendVerificationEmail({ to, name, token }: SendVerificatio
 
 // Generate random token
 export function generateVerificationToken(): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let token = '';
-    for (let i = 0; i < 64; i++) {
-        token += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return token;
+    return randomBytes(32).toString('hex');
 }
 
 // Get expiry time (24 hours from now)
@@ -142,7 +137,6 @@ export function getVerificationExpiry(): string {
 export async function sendResetPasswordEmail({ to, name, token }: SendResetPasswordEmailParams): Promise<boolean> {
     const baseUrl = process.env.FRONTEND_URL?.replace(/\/$/, '') || 'http://localhost:5173';
     const resetUrl = `${baseUrl}/reset-password?token=${token}`;
-    console.log(`\n--- [TESTING] Reset Password Link for ${to} ---\n${resetUrl}\n---------------------------------------------\n`);
     const shopName = await getShopName();
 
     const htmlContent = `

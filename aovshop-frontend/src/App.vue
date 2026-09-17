@@ -7,7 +7,7 @@
           <h3 class="popup-title">THÔNG BÁO</h3>
           <button class="popup-close" @click="closeNotification">✕</button>
         </div>
-        <div class="popup-content" v-html="notification.text">
+        <div class="popup-content" v-html="DOMPurify.sanitize(notification.text, { USE_PROFILES: { html: true } })">
         </div>
         <div class="popup-footer" style="display: flex; justify-content: space-around;">
           <button class="btn btn-secondary" @click="closeNotification">Đã hiểu</button>
@@ -35,6 +35,7 @@
 </template>
 
 <script setup>
+import DOMPurify from 'dompurify'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import Navbar from './components/Navbar.vue'

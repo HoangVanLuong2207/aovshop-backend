@@ -7,6 +7,10 @@ import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
 
 const router = Router();
+class CheckoutError extends Error {
+    constructor(public status: number, message: string) { super(message); }
+}
+
 
 const CHECKPASS_URL = (process.env.CHECKPASS_URL || 'https://check.sp1s.shop').replace(/\/$/, '');
 
@@ -59,6 +63,15 @@ const getPromotionDiscount = (
     subtotal: number,
     applicableSubtotal: number,
 ) => {
+    const now = Date.now();
+    if ((promo.startDate && (!Number.isFinite(Date.parse(promo.startDate)) || Date.parse(promo.startDate) > now)) ||
+        (promo.endDate && (!Number.isFinite(Date.parse(promo.endDate)) || Date.parse(promo.endDate) < now)) ||
+        (promo.usageLimit != null && (promo.usedCount || 0) >= promo.usageLimit)) {
+        return { valid: false, message: 'Mã giảm giá đã hết hạn hoặc hết lượt sử dụng', discount: 0 };
+    }
+    if (!Number.isFinite(promo.value) || promo.value < 0 || (promo.type === 'percent' && promo.value > 100)) {
+        return { valid: false, message: 'Mã giảm giá không hợp lệ', discount: 0 };
+    }
     if (promo.minOrder && subtotal < promo.minOrder) {
         return { valid: false, message: `Đơn hàng tối thiểu ${promo.minOrder.toLocaleString()}đ`, discount: 0 };
     }
@@ -77,7 +90,7 @@ const getPromotionDiscount = (
         discount = Math.min(promo.value, applicableSubtotal);
     }
 
-    return { valid: true, discount };
+    return { valid: true, discount: Math.max(0, Math.min(subtotal, Math.round(discount))) };
 };
 
 // Get user orders
@@ -219,237 +232,280 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { items, promo_code, note, customer_note } = req.body;
 
-        if (!Array.isArray(items) || items.length === 0) {
+        if (!Array.isArray(items) || items.length === 0 || items.length > 100) {
             return res.status(400).json({ message: 'Giỏ hàng không hợp lệ hoặc đang trống' });
         }
 
-        // Get user
-        const user = await db.query.users.findFirst({
-            where: eq(users.id, req.user!.id),
-        });
-
-        if (!user) {
-            return res.status(404).json({ message: 'User not found' });
-        }
-
-        // Calculate totals and verify account availability
-        let subtotal = 0;
-        const orderProducts = [];
-        const allTargetAccounts: any[] = [];
-        let hasPreorder = false;
-        let isAllPreorder = true;
-        const subtotalByProductId: Record<number, number> = {};
-
+        const quantities = new Map<number, number>();
         for (const item of items) {
+            const id = Number(item?.product_id);
             const quantity = Number(item?.quantity);
-            if (!Number.isInteger(quantity) || quantity < 1) {
-                return res.status(400).json({ message: 'Số lượng sản phẩm không hợp lệ' });
+            if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(quantity) || quantity <= 0 || quantity > 10000) {
+                return res.status(400).json({ message: 'Sản phẩm hoặc số lượng không hợp lệ' });
             }
-            const product = await db.query.products.findFirst({
-                where: eq(products.id, item.product_id),
+            const combined = (quantities.get(id) || 0) + quantity;
+            if (combined > 10000) return res.status(400).json({ message: 'Số lượng quá lớn' });
+            quantities.set(id, combined);
+        }
+        for (const value of [note, customer_note, promo_code]) {
+            if (value != null && (typeof value !== 'string' || value.length > 5000)) {
+                return res.status(400).json({ message: 'Dữ liệu không hợp lệ' });
+            }
+        }
+        const { order, user, orderProducts, orderType } = await db.transaction(async (tx) => {
+            // Get user
+            const user = await tx.query.users.findFirst({
+                where: eq(users.id, req.user!.id),
             });
 
-            if (!product) {
-                return res.status(400).json({ message: `Sản phẩm không tồn tại` });
+            if (!user) {
+                throw new CheckoutError(404, 'User not found');
             }
 
-            if (product.minimumOrderQuantity && quantity < product.minimumOrderQuantity) {
-                return res.status(400).json({
-                    message: `Sản phẩm "${product.name}" yêu cầu mua tối thiểu ${product.minimumOrderQuantity} sản phẩm.`
+            // Calculate totals and verify account availability
+            let subtotal = 0;
+            const orderProducts = [];
+            const allTargetAccounts: any[] = [];
+            let hasPreorder = false;
+            let isAllPreorder = true;
+            const subtotalByProductId: Record<number, number> = {};
+
+            for (const [product_id, quantity] of quantities) {
+                if (!Number.isInteger(quantity) || quantity < 1) {
+                    throw new CheckoutError(400, 'Số lượng sản phẩm không hợp lệ');
+                }
+                const product = await tx.query.products.findFirst({
+                    where: and(eq(products.id, product_id), eq(products.active, true)),
+                });
+
+                if (!product) {
+                    throw new CheckoutError(400, `Sản phẩm không tồn tại`);
+                }
+
+                if (product.minimumOrderQuantity && quantity < product.minimumOrderQuantity) {
+                    throw new CheckoutError(400, `Sản phẩm "${product.name}" yêu cầu mua tối thiểu ${product.minimumOrderQuantity} sản phẩm.`);
+                }
+
+                const checkpassHours = Number(product.checkpassHours || 0);
+                if (checkpassHours > 0) {
+                    isAllPreorder = false;
+                } else if (product.isPreorder) {
+                    hasPreorder = true;
+                } else {
+                    isAllPreorder = false;
+                    // Only check stock for non-preorder items
+                    const availableAccounts = await tx.query.productAccounts.findMany({
+                        where: and(
+                            eq(productAccounts.productId, product.id),
+                            eq(productAccounts.status, 'available')
+                        ),
+                        limit: quantity,
+                    });
+
+                    if (availableAccounts.length < quantity) {
+                        throw new CheckoutError(400, `${product.name} không đủ số lượng tài khoản trong kho (còn lại: ${availableAccounts.length})`);
+                    }
+
+                    allTargetAccounts.push(...availableAccounts);
+                }
+
+                const price = product.salePrice ?? product.price;
+                if (!Number.isFinite(price) || price < 0) throw new CheckoutError(400, 'Giá sản phẩm không hợp lệ');
+                const itemTotal = price * quantity;
+                subtotal += itemTotal;
+                subtotalByProductId[product.id] = (subtotalByProductId[product.id] || 0) + itemTotal;
+
+                orderProducts.push({
+                    product,
+                    quantity,
+                    price,
+                    total: itemTotal,
                 });
             }
 
-            const checkpassHours = Number(product.checkpassHours || 0);
-            if (checkpassHours > 0) {
-                // License products are issued after payment and do not use account stock.
-                isAllPreorder = false;
-            } else if (product.isPreorder) {
-                hasPreorder = true;
-            } else {
-                isAllPreorder = false;
-                // Only check stock for non-preorder items
-                const availableAccounts = await db.query.productAccounts.findMany({
-                    where: and(
-                        eq(productAccounts.productId, product.id),
-                        eq(productAccounts.status, 'available')
-                    ),
-                    limit: quantity,
-                });
-
-                if (availableAccounts.length < quantity) {
-                    return res.status(400).json({ message: `${product.name} không đủ số lượng tài khoản trong kho (còn lại: ${availableAccounts.length})` });
-                }
-
-                allTargetAccounts.push(...availableAccounts);
+            // Mixed cart not allowed: all must be same type
+            if (hasPreorder && !isAllPreorder) {
+                throw new CheckoutError(400, 'Không thể kết hợp sản phẩm thường và sản phẩm pre-order trong cùng một đơn hàng');
             }
 
-            const price = product.salePrice || product.price;
-            const itemTotal = price * quantity;
-            subtotal += itemTotal;
-            subtotalByProductId[product.id] = (subtotalByProductId[product.id] || 0) + itemTotal;
+            // === Daily buy limit check ===
+            // Calculate today's date range in VN timezone (UTC+7)
+            const nowVN = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
+            const todayStartVN = new Date(Date.UTC(
+                nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate(),
+                -7, 0, 0, 0 // 00:00:00 VN = -7h UTC
+            ));
+            const todayEndVN = new Date(Date.UTC(
+                nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate(),
+                -7 + 23, 59, 59, 999 // 23:59:59 VN
+            ));
+            const todayStartISO = todayStartVN.toISOString();
+            const todayEndISO = todayEndVN.toISOString();
 
-            orderProducts.push({
-                product,
-                quantity,
-                price,
-                total: itemTotal,
-            });
-        }
-
-        // Mixed cart not allowed: all must be same type
-        if (hasPreorder && !isAllPreorder) {
-            return res.status(400).json({ message: 'Không thể kết hợp sản phẩm thường và sản phẩm pre-order trong cùng một đơn hàng' });
-        }
-
-        // === Daily buy limit check ===
-        // Calculate today's date range in VN timezone (UTC+7)
-        const nowVN = new Date(new Date().getTime() + 7 * 60 * 60 * 1000);
-        const todayStartVN = new Date(Date.UTC(
-            nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate(),
-            -7, 0, 0, 0 // 00:00:00 VN = -7h UTC
-        ));
-        const todayEndVN = new Date(Date.UTC(
-            nowVN.getUTCFullYear(), nowVN.getUTCMonth(), nowVN.getUTCDate(),
-            -7 + 23, 59, 59, 999 // 23:59:59 VN
-        ));
-        const todayStartISO = todayStartVN.toISOString();
-        const todayEndISO = todayEndVN.toISOString();
-
-        for (const item of orderProducts) {
-            const limit = item.product.dailyBuyLimit;
-            if (limit && limit > 0) {
-                // Count how many of this product the user already bought today (excluding cancelled)
-                const purchasedResult = await db.select({
-                    total: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)`
-                })
-                .from(orderItems)
-                .innerJoin(orders, eq(orderItems.orderId, orders.id))
-                .where(and(
-                    eq(orders.userId, req.user!.id),
-                    eq(orderItems.productId, item.product.id),
-                    gte(orders.createdAt, todayStartISO),
-                    lte(orders.createdAt, todayEndISO),
-                    sql`${orders.status} != 'cancelled'`
-                ));
-
-                const purchasedToday = Number(purchasedResult[0]?.total || 0);
-                const remaining = limit - purchasedToday;
-
-                if (item.quantity > remaining) {
-                    const msg = purchasedToday > 0
-                        ? `Sản phẩm "${item.product.name}" giới hạn mua ${limit}/ngày. Hôm nay bạn đã mua ${purchasedToday}, chỉ còn mua được thêm ${remaining}.`
-                        : `Sản phẩm "${item.product.name}" giới hạn mua tối đa ${limit}/ngày.`;
-                    return res.status(400).json({ message: msg });
-                }
-            }
-        }
-
-        const orderType = hasPreorder ? 'preorder' : 'instant';
-
-        // Apply promotion
-        let discount = 0;
-        if (promo_code) {
-            const promo = await db.query.promotions.findFirst({
-                where: and(
-                    eq(promotions.code, promo_code),
-                    eq(promotions.active, true)
-                ),
-            });
-
-            if (promo) {
-                const promoProductIds = parsePromotionProductIds(promo.appliesToProductIds);
-                const applicableSubtotal = promoProductIds.length > 0
-                    ? promoProductIds.reduce((sum: number, productId: number) => sum + (subtotalByProductId[productId] || 0), 0)
-                    : subtotal;
-                const promoResult = getPromotionDiscount(promo, subtotal, applicableSubtotal);
-
-                if (!promoResult.valid) {
-                    return res.status(400).json({ message: promoResult.message });
-                }
-
-                discount = promoResult.discount;
-
-                // Update promo usage
-                await db.update(promotions)
-                    .set({ usedCount: (promo.usedCount || 0) + 1 })
-                    .where(eq(promotions.id, promo.id));
-            }
-        }
-
-        const total = subtotal - discount;
-
-        // Check balance
-        if (user.balance < total) {
-            return res.status(400).json({ message: 'Số dư không đủ' });
-        }
-
-        // Determine initial status
-        const initialStatus = orderType === 'preorder' ? 'waiting' : 'completed';
-
-        // Create order
-        const [order] = await db.insert(orders).values({
-            userId: user.id,
-            status: initialStatus as any,
-            orderType: orderType as any,
-            subtotal,
-            discount,
-            total,
-            promoCode: promo_code || null,
-            note: note || null,
-            customerNote: customer_note || null,
-            createdAt: new Date().toISOString(),
-        }).returning();
-
-        // Create order items, link accounts, and update stock
-        for (const item of orderProducts) {
-            await db.insert(orderItems).values({
-                orderId: order.id,
-                productId: item.product.id,
-                productName: item.product.name,
-                quantity: item.quantity,
-                price: item.price,
-                total: item.total,
-            });
-
-            // Only manage accounts for instant (non-preorder) items
-            if (!item.product.isPreorder && !item.product.checkpassHours) {
-                const productAccountsToLink = allTargetAccounts
-                    .filter(acc => acc.productId === item.product.id)
-                    .slice(0, item.quantity);
-
-                if (productAccountsToLink.length > 0) {
-                    const accountIds = productAccountsToLink.map(acc => acc.id);
-
-                    await db.update(productAccounts)
-                        .set({
-                            orderId: order.id,
-                            status: 'sold'
-                        })
-                        .where(inArray(productAccounts.id, accountIds));
-                }
-
-                const remainingCount = await db.select({ count: sql`count(*)` })
-                    .from(productAccounts)
+            for (const item of orderProducts) {
+                const limit = item.product.dailyBuyLimit;
+                if (limit && limit > 0) {
+                    // Count how many of this product the user already bought today (excluding cancelled)
+                    const purchasedResult = await tx.select({
+                        total: sql<number>`COALESCE(SUM(${orderItems.quantity}), 0)`
+                    })
+                    .from(orderItems)
+                    .innerJoin(orders, eq(orderItems.orderId, orders.id))
                     .where(and(
-                        eq(productAccounts.productId, item.product.id),
-                        eq(productAccounts.status, 'available')
+                        eq(orders.userId, req.user!.id),
+                        eq(orderItems.productId, item.product.id),
+                        gte(orders.createdAt, todayStartISO),
+                        lte(orders.createdAt, todayEndISO),
+                        sql`${orders.status} != 'cancelled'`
                     ));
 
-                await db.update(products)
-                    .set({
-                        stock: Number(remainingCount[0]?.count || 0),
-                        soldCount: sql`${products.soldCount} + ${item.quantity}`
-                    })
-                    .where(eq(products.id, item.product.id));
-            } else {
-                // For preorder: just increment soldCount
-                await db.update(products)
-                    .set({
-                        soldCount: sql`${products.soldCount} + ${item.quantity}`
-                    })
-                    .where(eq(products.id, item.product.id));
+                    const purchasedToday = Number(purchasedResult[0]?.total || 0);
+                    const remaining = limit - purchasedToday;
+
+                    if (item.quantity > remaining) {
+                        const msg = purchasedToday > 0
+                            ? `Sản phẩm "${item.product.name}" giới hạn mua ${limit}/ngày. Hôm nay bạn đã mua ${purchasedToday}, chỉ còn mua được thêm ${remaining}.`
+                            : `Sản phẩm "${item.product.name}" giới hạn mua tối đa ${limit}/ngày.`;
+                        throw new CheckoutError(400, msg);
+                    }
+                }
             }
-        }
+
+            const orderType = hasPreorder ? 'preorder' : 'instant';
+
+            // Apply promotion
+            let discount = 0;
+            if (promo_code) {
+                const promo = await tx.query.promotions.findFirst({
+                    where: and(
+                        eq(promotions.code, promo_code),
+                        eq(promotions.active, true)
+                    ),
+                });
+
+                if (!promo) throw new CheckoutError(400, 'Mã giảm giá không hợp lệ');
+                if (promo) {
+                    const promoProductIds = parsePromotionProductIds(promo.appliesToProductIds);
+                    const applicableSubtotal = promoProductIds.length > 0
+                        ? promoProductIds.reduce((sum: number, productId: number) => sum + (subtotalByProductId[productId] || 0), 0)
+                        : subtotal;
+                    const promoResult = getPromotionDiscount(promo, subtotal, applicableSubtotal);
+
+                    if (!promoResult.valid) {
+                        throw new CheckoutError(400, promoResult.message || 'Mã giảm giá không hợp lệ');
+                    }
+
+                    discount = promoResult.discount;
+
+                    // Update promo usage
+                    await tx.update(promotions)
+                        .set({ usedCount: sql`COALESCE(${promotions.usedCount}, 0) + 1` })
+                        .where(eq(promotions.id, promo.id));
+                }
+            }
+
+            const total = subtotal - discount;
+            if (!Number.isSafeInteger(total) || total < 0) throw new CheckoutError(400, 'Tổng tiền không hợp lệ');
+
+            // Check balance
+            if (user.balance < total) {
+                throw new CheckoutError(400, 'Số dư không đủ');
+            }
+
+            // Determine initial status
+            const initialStatus = orderType === 'preorder' ? 'waiting' : 'completed';
+
+            // Create order
+            const [order] = await tx.insert(orders).values({
+                userId: user.id,
+                status: initialStatus as any,
+                orderType: orderType as any,
+                subtotal,
+                discount,
+                total,
+                promoCode: promo_code || null,
+                note: note || null,
+                customerNote: customer_note || null,
+                createdAt: new Date().toISOString(),
+            }).returning();
+
+            // Create order items, link accounts, and update stock
+            for (const item of orderProducts) {
+                await tx.insert(orderItems).values({
+                    orderId: order.id,
+                    productId: item.product.id,
+                    productName: item.product.name,
+                    quantity: item.quantity,
+                    price: item.price,
+                    total: item.total,
+                });
+
+                // Only manage accounts for instant (non-preorder) items
+                if (!item.product.isPreorder && !item.product.checkpassHours) {
+                    const productAccountsToLink = allTargetAccounts
+                        .filter(acc => acc.productId === item.product.id)
+                        .slice(0, item.quantity);
+
+                    if (productAccountsToLink.length > 0) {
+                        const accountIds = productAccountsToLink.map(acc => acc.id);
+
+                        const claimed = await tx.update(productAccounts)
+                            .set({
+                                orderId: order.id,
+                                status: 'sold'
+                            })
+                            .where(and(inArray(productAccounts.id, accountIds), eq(productAccounts.status, 'available')))
+                            .returning({ id: productAccounts.id });
+                        if (claimed.length !== accountIds.length) throw new CheckoutError(409, 'Kho hàng đã thay đổi, vui lòng thử lại');
+                    }
+
+                    const remainingCount = await tx.select({ count: sql`count(*)` })
+                        .from(productAccounts)
+                        .where(and(
+                            eq(productAccounts.productId, item.product.id),
+                            eq(productAccounts.status, 'available')
+                        ));
+
+                    await tx.update(products)
+                        .set({
+                            stock: Number(remainingCount[0]?.count || 0),
+                            soldCount: sql`${products.soldCount} + ${item.quantity}`
+                        })
+                        .where(eq(products.id, item.product.id));
+                } else {
+                    // For preorder: just increment soldCount
+                    await tx.update(products)
+                        .set({
+                            soldCount: sql`${products.soldCount} + ${item.quantity}`
+                        })
+                        .where(eq(products.id, item.product.id));
+                }
+            }
+
+            // Update user balance (charged immediately)
+            const newBalance = user.balance - total;
+            const charged = await tx.update(users)
+                .set({ balance: sql`${users.balance} - ${total}` })
+                .where(and(eq(users.id, user.id), gte(users.balance, total)))
+                .returning({ id: users.id });
+            if (charged.length !== 1) throw new CheckoutError(400, 'Số dư không đủ');
+
+            // Create transaction
+            await tx.insert(transactions).values({
+                userId: user.id,
+                type: 'purchase',
+                amount: -total,
+                balanceBefore: user.balance,
+                balanceAfter: newBalance,
+                status: 'completed',
+                description: orderType === 'preorder'
+                    ? `Đặt hàng pre-order #${order.id}`
+                    : `Thanh toán đơn hàng #${order.id}`,
+                orderId: order.id,
+            });
+
+            return { order, user, orderProducts, orderType };
+        });
 
         const checkpassItems = orderProducts.filter((item: any) => Number(item.product.checkpassHours || 0) > 0);
         if (checkpassItems.length > 0) {
@@ -482,26 +538,6 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 order.deliveryData = JSON.stringify({ type: 'checkpass_pending', error: 'Đang cấp key, vui lòng liên hệ hỗ trợ nếu chưa nhận được.' });
             }
         }
-
-        // Update user balance (charged immediately)
-        const newBalance = user.balance - total;
-        await db.update(users)
-            .set({ balance: newBalance })
-            .where(eq(users.id, user.id));
-
-        // Create transaction
-        await db.insert(transactions).values({
-            userId: user.id,
-            type: 'purchase',
-            amount: -total,
-            balanceBefore: user.balance,
-            balanceAfter: newBalance,
-            status: 'completed',
-            description: orderType === 'preorder'
-                ? `Đặt hàng pre-order #${order.id}`
-                : `Thanh toán đơn hàng #${order.id}`,
-            orderId: order.id,
-        });
 
         // Notify Admin
         const orderLabel = orderType === 'preorder' ? 'PRE-ORDER' : 'MỚI';
@@ -538,6 +574,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             order,
         });
     } catch (error) {
+        if (error instanceof CheckoutError) return res.status(error.status).json({ message: error.message });
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
     }

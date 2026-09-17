@@ -1487,7 +1487,7 @@ router.put('/users/:id/password', async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password, 10);
         await db.update(users)
-            .set({ password: hashedPassword, updatedAt: new Date().toISOString() })
+            .set({ password: hashedPassword, tokenVersion: sql`${users.tokenVersion} + 1`, resetPasswordToken: null, resetPasswordExpires: null, updatedAt: new Date().toISOString() })
             .where(eq(users.id, userId));
 
         res.json({ message: 'Đặt lại mật khẩu thành công' });

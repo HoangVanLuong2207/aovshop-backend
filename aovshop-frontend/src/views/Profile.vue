@@ -58,7 +58,7 @@
               </div>
               <div class="form-group">
                 <label class="form-label">Mật khẩu mới</label>
-                <input v-model="password.password" type="password" class="form-input" required minlength="6" />
+                <input v-model="password.password" type="password" class="form-input" required minlength="8" />
               </div>
               <div class="form-group">
                 <label class="form-label">Xác nhận mật khẩu</label>
@@ -77,6 +77,7 @@
 
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import api, { authApi } from '../api'
 import { useToast } from '../composables/useToast'
@@ -85,6 +86,7 @@ import { storage } from '../utils/storage'
 const { toast } = useToast()
 
 const authStore = useAuthStore()
+const router = useRouter()
 
 const profile = reactive({
   name: '',
@@ -143,7 +145,9 @@ const changePassword = async () => {
     password.current_password = ''
     password.password = ''
     password.password_confirmation = ''
-    toast.success('Đổi mật khẩu thành công!')
+    authStore.clearAuth()
+    toast.success('Đổi mật khẩu thành công! Vui lòng đăng nhập lại.')
+    await router.replace('/login')
   } catch (error) {
     toast.error(error.response?.data?.message || 'Đổi mật khẩu thất bại')
   } finally {
