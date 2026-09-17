@@ -48,6 +48,7 @@ export const products = sqliteTable('products', {
     dailyBuyLimit: integer('daily_buy_limit'), // NULL or 0 = no limit
     minimumOrderQuantity: integer('minimum_order_quantity'), // NULL or 0 = no minimum
     // NULL/0: normal shop product. A positive value issues a Checkpass key for this many hours.
+    // SQLite INTEGER affinity preserves fractional hours (e.g. 0.5); keep the existing column.
     checkpassHours: integer('checkpass_hours'),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
