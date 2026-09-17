@@ -194,7 +194,7 @@ router.post('/products', async (req, res) => {
         const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity, checkpass_hours } = req.body;
         const checkpassHours = Number(checkpass_hours ?? 0);
         if (!Number.isFinite(checkpassHours) || checkpassHours < 0 || checkpassHours > 8760) {
-            res.status(400).json({ message: 'S? gi? Checkpass ph?i t? 0 ??n 8760 (0.5 = 30 ph?t)' });
+            res.status(400).json({ message: 'Số giờ Checkpass phải từ 0 đến 8760 (0.5 = 30 phút)' });
             return;
         }
 
@@ -236,7 +236,7 @@ const handleProductUpdate = async (req: any, res: any) => {
         const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity, checkpass_hours } = req.body;
         const checkpassHours = Number(checkpass_hours ?? 0);
         if (!Number.isFinite(checkpassHours) || checkpassHours < 0 || checkpassHours > 8760) {
-            res.status(400).json({ message: 'S? gi? Checkpass ph?i t? 0 ??n 8760 (0.5 = 30 ph?t)' });
+            res.status(400).json({ message: 'Số giờ Checkpass phải từ 0 đến 8760 (0.5 = 30 phút)' });
             return;
         }
         const productId = parseInt(req.params.id);
