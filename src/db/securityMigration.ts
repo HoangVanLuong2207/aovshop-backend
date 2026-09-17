@@ -5,7 +5,10 @@ export async function migrateSecurity(client: Client) {
     const tx = await client.transaction('write');
     try {
         const columns = await tx.execute('PRAGMA table_info(users)');
-        if (columns.rows.length && !columns.rows.some(row => row.name === 'token_version')) {
+        if (!columns.rows.length) {
+            throw new Error('Database is not initialized. Initialize a new empty database explicitly before starting the server.');
+        }
+        if (!columns.rows.some(row => row.name === 'token_version')) {
             await tx.execute('ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0');
         }
         await tx.execute(`CREATE TABLE IF NOT EXISTS payment_webhook_events (

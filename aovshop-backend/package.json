@@ -12,7 +12,7 @@
         "db:migrate-daily-limit": "tsx src/db/migrate-daily-limit.ts",
         "db:migrate-minimum-order-quantity": "tsx src/db/migrate-minimum-order-quantity.ts",
         "db:migrate-google-auth": "tsx src/db/migrate-google-auth.ts",
-        "test": "node tests/run-security.mjs",
+        "test": "npm run build && node tests/run-security.mjs",
         "db:migrate-security": "tsx src/db/migrate-security.ts"
     },
     "dependencies": {

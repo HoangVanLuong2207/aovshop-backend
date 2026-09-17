@@ -1,4 +1,4 @@
-// Startup script - runs db migrations and seed, then starts server
+// Startup runs reviewed additive migrations, then starts the server.
 import { execSync } from 'child_process';
 import { createClient } from '@libsql/client';
 import crypto from 'crypto';
@@ -13,11 +13,10 @@ async function main() {
     }
 
     try {
-        // Run database migrations (--force skips interactive prompts on Render)
-        console.log('📦 Running database migrations...');
-        execSync('npx drizzle-kit push --force', { stdio: 'inherit' });
+        // Production startup only runs reviewed, additive migrations.
+        // Never use drizzle-kit push here: schema diffing can delete populated tables.
+        console.log('Applying additive security migration...');
         execSync('npx tsx src/db/migrate-security.ts', { stdio: 'inherit' });
-        console.log('✅ Database migrations completed!');
 
         // Run push notification migration (adds VAPID keys if missing)
         console.log('🔔 Checking push notification settings...');
@@ -77,36 +76,15 @@ async function main() {
         }
         console.log('✅ Email settings verified!');
 
-        // ==================== SEED DATABASE ====================
-        console.log('🌱 Checking if database needs seeding...');
-
-        const result = await client.execute('SELECT COUNT(*) as count FROM users');
-        const userCount = result.rows[0].count;
-
-        if (userCount === 0) {
-            console.log('🌱 Seeding database...');
-            execSync('npx tsx src/db/seed.ts', { stdio: 'inherit' });
-            console.log('✅ Database seeded!');
-        } else {
-            console.log('✅ Database already has data, skipping seed.');
-        }
-
         // Start the server
         console.log('🌐 Starting server...');
         await import('./dist/index.js');
 
     } catch (error) {
         console.error('❌ Startup error:', error);
-        // If db:push fails on first run (table doesn't exist), try anyway
-        if (error.message?.includes('no such table')) {
-            console.log('📦 First run detected, running migrations...');
-            execSync('npx drizzle-kit push --force', { stdio: 'inherit' });
-            execSync('npx tsx src/db/migrate-security.ts', { stdio: 'inherit' });
-            execSync('npx tsx src/db/seed.ts', { stdio: 'inherit' });
-            await import('./dist/index.js');
-        } else {
-            process.exit(1);
-        }
+        // A missing/incompatible schema requires an explicit migration; never retry
+        // with destructive schema synchronization or reseed an existing database.
+        process.exit(1);
     }
 }
 

@@ -8,6 +8,8 @@ import { isTable, eq, sql } from 'drizzle-orm';
 import { OAuth2Client } from 'google-auth-library';
 import { createClient } from '@libsql/client';
 import { migrateSecurity } from '../src/db/securityMigration.js';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 
 // Never load dotenv or use a configured remote database in regression tests.
 if (!process.env.AOVSHOP_SECURITY_TEST_DB?.startsWith('file:')) throw new Error('Run through npm test for an isolated database');
@@ -230,4 +232,45 @@ test('security migration preserves balances and only revokes old email tokens on
         row = (await legacy.execute('SELECT * FROM users')).rows[0];
         assert.equal(row.reset_password_token, 'new-reset');
     } finally { legacy.close(); }
+});
+
+test('real production startup preserves legacy users and balances without schema push', { timeout: 60000 }, async () => {
+    const url = process.env.AOVSHOP_SECURITY_TEST_DB!.replace('test.db', 'startup.db');
+    const fixture = createClient({ url });
+    for (const table of Object.values(schema).filter(isTable)) {
+        const config = getTableConfig(table as any);
+        const columns = config.columns.filter(c => !(config.name === 'users' && c.name === 'token_version'))
+            .map(c => `"${c.name}" ${c.getSQLType()}${c.primary ? ' PRIMARY KEY' : ''}${c.notNull ? ' NOT NULL' : ''}${c.isUnique ? ' UNIQUE' : ''}`);
+        await fixture.execute(`CREATE TABLE "${config.name}" (${columns.join(',')})`);
+    }
+    await fixture.execute("INSERT INTO users (id,name,email,password,role,balance,email_verified) VALUES (57,'Existing customer','existing@example.invalid','existing-hash','user',12345,1)");
+    fixture.close();
+    const child = spawn(process.execPath, ['startup.js'], {
+        cwd: process.cwd(),
+        env: { ...process.env, TURSO_DATABASE_URL: url, TURSO_AUTH_TOKEN: '', PORT: '0' },
+        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
+    });
+    const exited = once(child, 'exit');
+    let startupOutput = '';
+    child.stdout.on('data', chunk => { startupOutput += chunk.toString(); });
+    child.stderr.on('data', chunk => { startupOutput += chunk.toString(); });
+    try {
+        await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error(`Startup timed out: ${startupOutput}`)), 45000);
+            child.stdout.on('data', chunk => {
+                if (chunk.toString().includes('Server running')) { clearTimeout(timeout); resolve(); }
+            });
+            child.on('error', error => { clearTimeout(timeout); reject(error); });
+            child.on('exit', code => { clearTimeout(timeout); reject(new Error(`Startup exited with ${code}: ${startupOutput}`)); });
+        });
+        const verify = createClient({ url });
+        try {
+            const result = await verify.execute('SELECT id,password,balance,token_version FROM users');
+            assert.equal(result.rows.length, 1);
+            assert.equal(result.rows[0].id, 57);
+            assert.equal(result.rows[0].password, 'existing-hash');
+            assert.equal(result.rows[0].balance, 12345);
+            assert.equal(result.rows[0].token_version, 0);
+        } finally { verify.close(); }
+    } finally { child.kill(); await exited; }
 });
