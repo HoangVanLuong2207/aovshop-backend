@@ -289,6 +289,7 @@
             type="number"
             class="form-input"
             min="1"
+            max="1000000000"
             step="1"
             required
           />

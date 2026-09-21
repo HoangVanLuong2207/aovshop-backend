@@ -70,6 +70,21 @@ test('deposit history does not expose webhook secrets', async () => {
     assert.equal('secretKey' in r.body[0].bank, false);
     assert.equal('merchantId' in r.body[0].bank, false);
 });
+test('deposit minimum is public and enforced from settings', async () => {
+    const u = await user(0);
+    await db.insert(settings).values({ key: 'minimum_deposit_amount', value: '25000' });
+
+    const config = await request('/deposit/config');
+    assert.equal(config.status, 200);
+    assert.equal(config.body.minimum_deposit_amount, 25000);
+
+    const belowMinimum = await request('/deposit/create', { amount: 24999 }, u.token);
+    assert.equal(belowMinimum.status, 400);
+    assert.equal(belowMinimum.body.minimum_deposit_amount, 25000);
+    assert.match(belowMinimum.body.message, /25\.000đ/);
+
+    await db.delete(settings).where(eq(settings.key, 'minimum_deposit_amount'));
+});
 test('webhook rejects missing configuration, bad keys and unmatched payments', async () => {
     const missing = await payment(null);
     assert.equal((await webhook(missing.payload)).status, 503);

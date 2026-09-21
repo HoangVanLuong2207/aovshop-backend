@@ -9,6 +9,20 @@ import { TelegramService } from '../services/telegram.js';
 
 const router = Router();
 
+const DEFAULT_MINIMUM_DEPOSIT_AMOUNT = 10000;
+const MAXIMUM_DEPOSIT_AMOUNT = 1000000000;
+
+const getMinimumDepositAmount = async () => {
+    const setting = await db.query.settings.findFirst({
+        where: eq(settings.key, 'minimum_deposit_amount'),
+    });
+    const configuredAmount = Number(setting?.value);
+
+    return Number.isSafeInteger(configuredAmount) && configuredAmount > 0 && configuredAmount <= MAXIMUM_DEPOSIT_AMOUNT
+        ? configuredAmount
+        : DEFAULT_MINIMUM_DEPOSIT_AMOUNT;
+};
+
 const getCurrentMonthDepositCountsByBank = async (bankIds: number[]) => {
     if (bankIds.length === 0) return new Map<number, number>();
 
@@ -94,12 +108,28 @@ router.get('/shop-info', async (req, res) => {
     }
 });
 
+// Public constraint used by the deposit form. The create endpoint remains the
+// source of truth, so changing the setting takes effect without a deployment.
+router.get('/config', async (req, res) => {
+    try {
+        res.json({ minimum_deposit_amount: await getMinimumDepositAmount() });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Lỗi server' });
+    }
+});
+
 // Create deposit with AUTO-ROTATION logic
 router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { amount } = req.body;
-        if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount < 10000 || amount > 1000000000) {
-            return res.status(400).json({ message: 'Số tiền nạp tối thiểu là 10.000đ' });
+        const minimumDepositAmount = await getMinimumDepositAmount();
+        if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount < minimumDepositAmount || amount > MAXIMUM_DEPOSIT_AMOUNT) {
+            const formattedMinimum = new Intl.NumberFormat('vi-VN').format(minimumDepositAmount);
+            return res.status(400).json({
+                message: `Số tiền nạp tối thiểu là ${formattedMinimum}đ`,
+                minimum_deposit_amount: minimumDepositAmount,
+            });
         }
 
         const userId = req.user!.id;
