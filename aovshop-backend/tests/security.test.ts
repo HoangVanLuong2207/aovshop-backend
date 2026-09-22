@@ -19,6 +19,8 @@ process.env.JWT_SECRET = 'isolated-security-test-secret-not-for-production';
 delete process.env.BREVO_API_KEY;
 delete process.env.BREVO_SENDER_EMAIL;
 delete process.env.LICENSE_SERVER_URL;
+delete process.env.ADMIN_EMAIL;
+delete process.env.ADMIN_PASSWORD;
 const { db, client } = await import('../src/db/index.js');
 const schema = await import('../src/db/schema.js');
 const { users, products, productAccounts, orders, transactions, deposits, paymentAccounts, settings, promotions } = schema;
@@ -62,6 +64,11 @@ async function webhook(payload: unknown, key = 'test-webhook-key') {
     return { status: r.status, body: await r.json() as any };
 }
 
+test('removed hardcoded administrator tokens are rejected', async () => {
+    const legacyToken = jwt.sign({ userId: -2, role: 'admin' }, process.env.JWT_SECRET!);
+    assert.equal((await request('/auth/profile', undefined, legacyToken)).status, 401);
+});
+
 test('deposit history does not expose webhook secrets', async () => {
     const p = await payment();
     const r = await request('/deposit/history', undefined, p.u.token);
@@ -85,6 +92,22 @@ test('deposit minimum is public and enforced from settings', async () => {
 
     await db.delete(settings).where(eq(settings.key, 'minimum_deposit_amount'));
 });
+test('late bank transfer settles an expired deposit exactly once', async () => {
+    const p = await payment();
+    const oldDate = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+    await db.update(deposits).set({ createdAt: oldDate, status: 'expired' }).where(eq(deposits.id, p.deposit.id));
+    assert.equal((await webhook({ ...p.payload, content: `BankAPINotify ${p.deposit.reference}` })).status, 200);
+    assert.equal((await webhook({ ...p.payload, content: `BankAPINotify ${p.deposit.reference}` })).status, 200);
+    assert.equal((await db.query.deposits.findFirst({ where: eq(deposits.id, p.deposit.id) }))!.status, 'completed');
+    assert.equal((await db.query.users.findFirst({ where: eq(users.id, p.u.id) }))!.balance, 10000);
+});
+test('late bank transfer settles an old pending deposit', async () => {
+    const p = await payment();
+    const reference = `NAP18092603423582332b729065e002U${p.u.id}`;
+    await db.update(deposits).set({ reference, createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString() }).where(eq(deposits.id, p.deposit.id));
+    assert.equal((await webhook({ ...p.payload, code: 'NAP18092', content: reference, description: `BankAPINotify ${reference}` })).status, 200);
+    assert.equal((await db.query.users.findFirst({ where: eq(users.id, p.u.id) }))!.balance, 10000);
+});
 test('webhook rejects missing configuration, bad keys and unmatched payments', async () => {
     const missing = await payment(null);
     assert.equal((await webhook(missing.payload)).status, 503);
@@ -104,8 +127,8 @@ test('valid webhook credits once, retry is idempotent and event cannot be reused
     assert.equal((await webhook({ ...other.payload, id: p.payload.id })).status, 400);
     assert.equal((await db.query.users.findFirst({ where: eq(users.id, other.u.id) }))!.balance, 0);
 });
-test('expired and already completed deposits cannot be credited', async () => {
-    for (const status of ['expired', 'completed'] as const) {
+test('failed and already completed deposits cannot be credited', async () => {
+    for (const status of ['failed', 'completed'] as const) {
         const p = await payment();
         await db.update(deposits).set({ status }).where(eq(deposits.id, p.deposit.id));
         assert.equal((await webhook(p.payload)).status, 400);

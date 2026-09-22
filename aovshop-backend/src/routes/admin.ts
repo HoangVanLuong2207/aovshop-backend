@@ -1109,14 +1109,15 @@ router.post('/deposits/:id/approve', async (req, res) => {
             const currentBalance = user.balance || 0;
             const newBalance = currentBalance + amount;
 
-            // Update user balance
-            await tx.update(users).set({ balance: newBalance }).where(eq(users.id, user.id));
-
-            // Update deposit status
-            await tx.update(deposits).set({ 
+            // Claim the deposit before crediting it: a webhook may be settling it concurrently.
+            const claimed = await tx.update(deposits).set({
                 status: 'completed',
                 updatedAt: new Date().toISOString()
-            }).where(eq(deposits.id, deposit.id));
+            }).where(and(eq(deposits.id, deposit.id), inArray(deposits.status, ['pending', 'expired', 'failed'])))
+              .returning({ id: deposits.id });
+            if (claimed.length !== 1) throw new Error('Đơn nạp đã hoàn thành trước đó');
+
+            await tx.update(users).set({ balance: sql`${users.balance} + ${amount}` }).where(eq(users.id, user.id));
 
             // Create transaction
             await tx.insert(transactions).values({

@@ -62,7 +62,7 @@ Sau khi deploy xong, chạy command trong local:
 cd backend-ts
 npm install
 npm run db:push    # Tạo tables
-npm run db:seed    # Tạo admin + data mẫu
+npm run db:seed    # Khởi tạo dữ liệu cần thiết
 ```
 
 ---
@@ -119,14 +119,10 @@ Quay lại Render → Backend → Environment Variables:
 
 ---
 
-## Tài khoản mặc định
+## Tài khoản quản trị
 
-| Email | Password | Role |
-|-------|----------|------|
-| admin@example.com | password | Admin |
-| user@example.com | password | User |
-
-**⚠️ Đổi mật khẩu sau khi đăng nhập lần đầu!**
+Không có tài khoản admin hardcode. Cấu hình `ADMIN_EMAIL` và `ADMIN_PASSWORD`
+trong biến môi trường, hoặc sử dụng một tài khoản database có `role=admin`.
 
 ---
 

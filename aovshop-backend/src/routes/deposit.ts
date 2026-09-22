@@ -227,16 +227,17 @@ router.post('/webhook', async (req, res) => {
             const legacy = await tx.query.transactions.findFirst({ where: eq(transactions.reference, String(transactionId)) });
             if (legacy) return { error: 'Event already processed' };
             const deposit = await tx.query.deposits.findFirst({ where: eq(deposits.id, pending.id) });
-            if (!deposit || deposit.status !== 'pending' || deposit.amount !== amount ||
-                deposit.bankId !== pending.bankId || !deposit.createdAt ||
-                Date.parse(deposit.createdAt) < Date.now() - 2 * 60 * 60 * 1000) {
+            // A bank transfer can arrive after the deposit's two-hour display window.
+            // An expired but unpaid reference is still unique and safe to settle once.
+            if (!deposit || !['pending', 'expired'].includes(deposit.status) || deposit.amount !== amount ||
+                deposit.bankId !== pending.bankId) {
                 return { error: 'Deposit is unavailable or amount does not match' };
             }
             const user = await tx.query.users.findFirst({ where: eq(users.id, userId) });
             if (!user || !Number.isSafeInteger(user.balance + amount)) return { error: 'Invalid balance' };
             const claimed = await tx.update(deposits)
                 .set({ status: 'completed', transactionId: String(transactionId), updatedAt: new Date().toISOString() })
-                .where(and(eq(deposits.id, deposit.id), eq(deposits.status, 'pending')))
+                .where(and(eq(deposits.id, deposit.id), inArray(deposits.status, ['pending', 'expired'])))
                 .returning({ id: deposits.id });
             if (claimed.length !== 1) throw new Error('Deposit changed during processing');
             await tx.insert(paymentWebhookEvents).values({ id: eventId, depositId: deposit.id });
