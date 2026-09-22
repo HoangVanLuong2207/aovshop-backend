@@ -314,7 +314,7 @@
           </div>
         </div>
         
-        <button class="btn btn-secondary btn-block" @click="openAddAccountModal">
+        <button class="btn btn-secondary btn-block" @click="showAddAccountModal = true">
           + Thêm tài khoản ngân hàng
         </button>
       </div>
@@ -322,7 +322,7 @@
 
     <!-- Add/Edit Account Modal -->
     <Transition name="modal">
-      <div v-if="showAddAccountModal" class="modal-overlay" @click.self="closeAccountModal">
+      <div v-if="showAddAccountModal" class="modal-overlay" @click.self="showAddAccountModal = false">
         <div class="modal-card">
           <h3>{{ editingAccount ? 'Chỉnh sửa tài khoản' : 'Thêm tài khoản mới' }}</h3>
           <div class="form-group">
@@ -352,24 +352,7 @@
           </div>
           <div class="form-group">
             <label>Secret Key (SePay)</label>
-            <div class="secret-input-wrapper">
-              <input
-                v-model="accountForm.secretKey"
-                :type="showAccountSecret ? 'text' : 'password'"
-                class="form-input secret-input"
-                placeholder="Nhập Secret Key"
-                autocomplete="off"
-              />
-              <button
-                type="button"
-                class="secret-toggle"
-                :aria-label="showAccountSecret ? 'Ẩn Secret Key' : 'Hiện Secret Key'"
-                :title="showAccountSecret ? 'Ẩn Secret Key' : 'Hiện Secret Key'"
-                @click="showAccountSecret = !showAccountSecret"
-              >
-                {{ showAccountSecret ? 'Ẩn' : 'Hiện' }}
-              </button>
-            </div>
+            <input v-model="accountForm.secretKey" type="password" class="form-input" placeholder="Nhập Secret Key" />
           </div>
           <div class="modal-actions">
             <button class="btn btn-primary" @click="saveAccount">💾 Lưu</button>
@@ -493,7 +476,6 @@ const generateApiToken = () => {
 
 const paymentAccountsList = ref([])
 const showAddAccountModal = ref(false)
-const showAccountSecret = ref(false)
 const editingAccount = ref(null)
 const accountForm = ref({
   bankName: 'MB',
@@ -678,22 +660,9 @@ const loadPaymentAccounts = async () => {
   }
 }
 
-const openAddAccountModal = () => {
-  editingAccount.value = null
-  showAccountSecret.value = false
-  accountForm.value = { bankName: 'MB', accountNumber: '', accountName: '', merchantId: '', secretKey: '', isActive: true }
-  showAddAccountModal.value = true
-}
-
-const closeAccountModal = () => {
-  showAddAccountModal.value = false
-  showAccountSecret.value = false
-}
-
 const editAccount = (account) => {
   editingAccount.value = account
   accountForm.value = { ...account }
-  showAccountSecret.value = false
   showAddAccountModal.value = true
 }
 
@@ -707,7 +676,6 @@ const saveAccount = async () => {
       toast.success('Thêm tài khoản thành công')
     }
     showAddAccountModal.value = false
-    showAccountSecret.value = false
     editingAccount.value = null
     accountForm.value = { bankName: 'MB', accountNumber: '', accountName: '', merchantId: '', secretKey: '', isActive: true }
     loadPaymentAccounts()
@@ -800,33 +768,6 @@ onMounted(() => {
 .form-input:focus {
   outline: none;
   border-color: var(--primary-color);
-}
-
-.secret-input-wrapper {
-  position: relative;
-}
-
-.secret-input {
-  padding-right: 66px;
-}
-
-.secret-toggle {
-  position: absolute;
-  top: 50%;
-  right: 8px;
-  transform: translateY(-50%);
-  border: 0;
-  background: transparent;
-  color: var(--primary-color);
-  font-weight: 600;
-  cursor: pointer;
-  padding: 6px 8px;
-}
-
-.secret-toggle:focus-visible {
-  outline: 2px solid var(--primary-color);
-  outline-offset: 2px;
-  border-radius: 4px;
 }
 
 .webhook-info {
