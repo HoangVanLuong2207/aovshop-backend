@@ -1,6 +1,8 @@
 import crypto from 'crypto';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { DepositPeriod, DepositStatistic, DepositTarget, getDepositStatistic, getDepositStatistics, getVietnamNowParts } from './depositStatistics.js';
+import { deposits, orders, paymentAccounts, productAccounts, products, settings, users } from '../db/schema.js';
+import { DepositPeriod, DepositStatistic, DepositTarget, getDepositStatistic, getDepositStatistics, getVietnamDepositRange, getVietnamNowParts } from './depositStatistics.js';
 
 type ChatId = string | number;
 type InlineKeyboard = { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
@@ -30,6 +32,8 @@ const chunk = <T>(items: T[], size: number) => items.reduce<T[][]>((rows, item, 
     return rows;
 }, []);
 const commandPeriod: Record<string, DepositPeriod> = { '/ngay': 'day', '/day': 'day', '/thang': 'month', '/month': 'month', '/nam': 'year', '/year': 'year' };
+const DAILY_REPORT_SETTING = 'telegram_daily_report_enabled';
+let dailyReportTimer: NodeJS.Timeout | undefined;
 
 const parseTarget = (period: DepositPeriod, value?: string): DepositTarget | undefined => {
     if (!value) return undefined;
@@ -65,6 +69,58 @@ const pickerKeyboard = (period: DepositPeriod): InlineKeyboard => {
     return { inline_keyboard: [...chunk(buttons, 2), [{ text: '↩️ Quay lại', callback_data: 'deposit:menu' }]] };
 };
 
+const getDashboard = async () => {
+    const range = getVietnamDepositRange('day');
+    const [depositsToday, completedOrders, pendingOrders, newUsers] = await Promise.all([
+        getDepositStatistic('day'),
+        db.select({ count: sql<number>`count(*)`, amount: sql<number>`coalesce(sum(${orders.total}), 0)` }).from(orders).where(and(eq(orders.status, 'completed'), gte(orders.createdAt, range.start))),
+        db.select({ count: sql<number>`count(*)` }).from(orders).where(inArray(orders.status, ['pending', 'waiting'])),
+        db.select({ count: sql<number>`count(*)` }).from(users).where(gte(users.createdAt, range.start)),
+    ]);
+    return { depositsToday, completedOrders: completedOrders[0], pendingOrders: Number(pendingOrders[0]?.count || 0), newUsers: Number(newUsers[0]?.count || 0) };
+};
+
+const dashboardMessage = async () => {
+    const stats = await getDashboard();
+    return `📊 <b>DASHBOARD HÔM NAY</b>\n\n` +
+        `💰 Nạp: <b>${formatCurrency(stats.depositsToday.amount)}</b> (${stats.depositsToday.count} GD)\n` +
+        `🛒 Đơn hoàn thành: <b>${Number(stats.completedOrders?.count || 0)}</b> — ${formatCurrency(Number(stats.completedOrders?.amount || 0))}\n` +
+        `⏳ Đơn chờ: <b>${stats.pendingOrders}</b>\n👤 User mới: <b>${stats.newUsers}</b>`;
+};
+
+const pendingMessage = async () => {
+    const [pendingOrders, pendingDeposits] = await Promise.all([
+        db.select({ id: orders.id, total: orders.total, status: orders.status, createdAt: orders.createdAt }).from(orders).where(inArray(orders.status, ['pending', 'waiting'])).limit(10),
+        db.select({ id: deposits.id, amount: deposits.amount, reference: deposits.reference, createdAt: deposits.createdAt }).from(deposits).where(eq(deposits.status, 'pending')).limit(10),
+    ]);
+    const orderLines = pendingOrders.length ? pendingOrders.map(order => `• #${order.id} — ${formatCurrency(order.total)} (${order.status})`).join('\n') : '• Không có';
+    const depositLines = pendingDeposits.length ? pendingDeposits.map(deposit => `• #${deposit.id} — ${formatCurrency(deposit.amount)} — <code>${TelegramService.escapeHtml(deposit.reference)}</code>`).join('\n') : '• Không có';
+    return `⏳ <b>TÁC VỤ ĐANG CHỜ</b>\n\n🛒 <b>Đơn hàng</b>\n${orderLines}\n\n💳 <b>Yêu cầu nạp</b>\n${depositLines}`;
+};
+
+const stockMessage = async () => {
+    const available = sql<number>`coalesce(sum(case when ${productAccounts.status} = 'available' then 1 else 0 end), 0)`;
+    const rows = await db.select({ id: products.id, name: products.name, isPreorder: products.isPreorder, available }).from(products)
+        .leftJoin(productAccounts, eq(productAccounts.productId, products.id)).groupBy(products.id).orderBy(available).limit(15);
+    const lines = rows.map(product => `• #${product.id} ${TelegramService.escapeHtml(product.name)}: <b>${Number(product.available)}</b>${product.isPreorder ? ' (preorder)' : ''}`);
+    return `📦 <b>TỒN KHO THẤP NHẤT</b>\n\n${lines.length ? lines.join('\n') : 'Chưa có sản phẩm.'}`;
+};
+
+const healthMessage = async () => {
+    const [database, banks] = await Promise.all([
+        db.select({ count: sql<number>`count(*)` }).from(settings),
+        db.select({ count: sql<number>`count(*)` }).from(paymentAccounts).where(eq(paymentAccounts.isActive, true)),
+    ]);
+    return `🟢 <b>HEALTH CHECK</b>\n\nBackend: <b>OK</b>\nDatabase: <b>OK</b> (${Number(database[0]?.count || 0)} settings)\nTài khoản nhận tiền đang bật: <b>${Number(banks[0]?.count || 0)}</b>\nThời gian: ${new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`;
+};
+
+const getDailyReportEnabled = async () => (await db.query.settings.findFirst({ where: eq(settings.key, DAILY_REPORT_SETTING) }))?.value === 'true';
+const setDailyReportEnabled = async (enabled: boolean) => {
+    const existing = await db.query.settings.findFirst({ where: eq(settings.key, DAILY_REPORT_SETTING) });
+    if (existing) await db.update(settings).set({ value: String(enabled), updatedAt: new Date().toISOString() }).where(eq(settings.id, existing.id));
+    else await db.insert(settings).values({ key: DAILY_REPORT_SETTING, value: String(enabled), description: 'Gửi báo cáo Telegram lúc 08:00 giờ Việt Nam' });
+};
+
 export const TelegramService = {
     escapeHtml: (text: string) => text ? text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') : '',
 
@@ -94,6 +150,9 @@ export const TelegramService = {
             await fetch(`https://api.telegram.org/bot${token}/setMyCommands`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ commands: [
                 { command: 'thongke', description: 'Chọn thống kê nạp tiền' }, { command: 'ngay', description: 'Thống kê ngày: dd/mm/yyyy' },
                 { command: 'thang', description: 'Thống kê tháng: mm/yyyy' }, { command: 'nam', description: 'Thống kê năm: yyyy' }, { command: 'help', description: 'Hướng dẫn sử dụng' },
+                { command: 'dashboard', description: 'Tổng quan vận hành hôm nay' }, { command: 'doncho', description: 'Đơn hàng và yêu cầu nạp đang chờ' },
+                { command: 'tonkho', description: 'Tồn kho sản phẩm thấp nhất' }, { command: 'health', description: 'Kiểm tra backend và database' },
+                { command: 'baocao', description: 'Báo cáo nhanh; bat/tat báo cáo ngày' },
             ] }) });
             console.log(`[Telegram] Webhook configured: ${webhookUrl}`); return true;
         } catch (error) { console.error('[Telegram] Webhook setup error:', error); return false; }
@@ -133,6 +192,22 @@ export const TelegramService = {
         const [rawCommand, ...argumentsList] = text.split(/\s+/);
         const command = rawCommand.toLowerCase().replace(/@[^\s]+$/, '');
         if (command === '/thongke' || command === '/stats') return void await TelegramService.sendMessage('💰 <b>CHỌN KIỂU THỐNG KÊ</b>', sourceChatId, mainKeyboard());
+        if (command === '/dashboard') return void await TelegramService.sendMessage(await dashboardMessage(), sourceChatId);
+        if (command === '/doncho') return void await TelegramService.sendMessage(await pendingMessage(), sourceChatId);
+        if (command === '/tonkho') return void await TelegramService.sendMessage(await stockMessage(), sourceChatId);
+        if (command === '/health') return void await TelegramService.sendMessage(await healthMessage(), sourceChatId);
+        if (command === '/baocao') {
+            const action = argumentsList[0]?.toLowerCase();
+            if (action === 'bat') {
+                await setDailyReportEnabled(true);
+                return void await TelegramService.sendMessage('✅ Đã bật báo cáo tự động lúc <b>08:00</b> mỗi ngày (giờ Việt Nam).', sourceChatId);
+            }
+            if (action === 'tat') {
+                await setDailyReportEnabled(false);
+                return void await TelegramService.sendMessage('⏸ Đã tắt báo cáo tự động hằng ngày.', sourceChatId);
+            }
+            return void await TelegramService.sendMessage(`${await dashboardMessage()}\n\nDùng <code>/baocao bat</code> hoặc <code>/baocao tat</code> để quản lý báo cáo tự động.`, sourceChatId);
+        }
         if (commandPeriod[command]) {
             const period = commandPeriod[command];
             try {
@@ -140,6 +215,23 @@ export const TelegramService = {
                 return void await TelegramService.sendMessage(`💰 <b>THỐNG KÊ NẠP TIỀN</b>\n\n${statisticLine(period === 'day' ? '📅' : period === 'month' ? '🗓' : '📊', titleByPeriod[period], statistic)}`, sourceChatId, mainKeyboard());
             } catch { return void await TelegramService.sendMessage(`Sai định dạng. Dùng: <code>${period === 'day' ? '/ngay dd/mm/yyyy' : period === 'month' ? '/thang mm/yyyy' : '/nam yyyy'}</code>`, sourceChatId); }
         }
-        if (command === '/start' || command === '/help') await TelegramService.sendMessage('🤖 <b>LỆNH THỐNG KÊ AOV SHOP</b>\n\n/thongke - Mở nút chọn ngày, tháng, năm\n/ngay 24/09/2026 - Thống kê ngày cụ thể\n/thang 09/2026 - Thống kê tháng cụ thể\n/nam 2026 - Thống kê năm cụ thể', sourceChatId, mainKeyboard());
+        if (command === '/start' || command === '/help') await TelegramService.sendMessage('🤖 <b>LỆNH QUẢN TRỊ AOV SHOP</b>\n\n/thongke — chọn thống kê nạp\n/dashboard — tổng quan hôm nay\n/doncho — đơn và nạp đang chờ\n/tonkho — tồn kho thấp\n/health — trạng thái hệ thống\n/baocao — báo cáo nhanh\n/baocao bat|tat — bật/tắt báo cáo 08:00 mỗi ngày', sourceChatId, mainKeyboard());
+    },
+
+    startDailyReportScheduler: () => {
+        if (dailyReportTimer) return;
+        const scheduleNext = () => {
+            const now = new Date();
+            const vnNow = new Date(now.getTime() + 7 * 60 * 60 * 1000);
+            const next = new Date(Date.UTC(vnNow.getUTCFullYear(), vnNow.getUTCMonth(), vnNow.getUTCDate(), 8) - 7 * 60 * 60 * 1000);
+            if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
+            dailyReportTimer = setTimeout(async () => {
+                try {
+                    if (await getDailyReportEnabled()) await TelegramService.sendMessage(`📬 <b>BÁO CÁO TỰ ĐỘNG</b>\n\n${await dashboardMessage()}`);
+                } catch (error) { console.error('[Telegram] Daily report error:', error); }
+                scheduleNext();
+            }, next.getTime() - now.getTime());
+        };
+        scheduleNext();
     },
 };

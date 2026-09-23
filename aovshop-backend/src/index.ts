@@ -161,4 +161,5 @@ app.listen(PORT, async () => {
         console.log(`✅ Startup cleanup: ${expiredCount} expired deposit(s) processed`);
     }
     await TelegramService.setupWebhook();
+    TelegramService.startDailyReportScheduler();
 });
