@@ -1,7 +1,7 @@
 import crypto from 'crypto';
-import { and, eq, gte, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, like, lte, sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
-import { deposits, orders, paymentAccounts, productAccounts, products, settings, users } from '../db/schema.js';
+import { deposits, orders, paymentAccounts, productAccounts, products, promotions, settings, transactions, users } from '../db/schema.js';
 import { DepositPeriod, DepositStatistic, DepositTarget, getDepositStatistic, getDepositStatistics, getVietnamDepositRange, getVietnamNowParts } from './depositStatistics.js';
 
 type ChatId = string | number;
@@ -114,6 +114,50 @@ const healthMessage = async () => {
     return `🟢 <b>HEALTH CHECK</b>\n\nBackend: <b>OK</b>\nDatabase: <b>OK</b> (${Number(database[0]?.count || 0)} settings)\nTài khoản nhận tiền đang bật: <b>${Number(banks[0]?.count || 0)}</b>\nThời gian: ${new Date().toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })}`;
 };
 
+const topDepositorsMessage = async () => {
+    const range = getVietnamDepositRange('month');
+    const total = sql<number>`coalesce(sum(${transactions.amount}), 0)`;
+    const rows = await db.select({ name: users.name, total, count: sql<number>`count(${transactions.id})` }).from(transactions)
+        .innerJoin(users, eq(transactions.userId, users.id))
+        .where(and(eq(transactions.type, 'deposit'), eq(transactions.status, 'completed'), gte(transactions.createdAt, range.start)))
+        .groupBy(users.id).orderBy(desc(total)).limit(10);
+    const lines = rows.map((row, index) => `${index + 1}. ${TelegramService.escapeHtml(row.name)} — <b>${formatCurrency(Number(row.total))}</b> (${Number(row.count)} GD)`);
+    return `🏆 <b>TOP NẠP THÁNG ${range.label}</b>\n\n${lines.length ? lines.join('\n') : 'Chưa có giao dịch nạp.'}`;
+};
+
+const topBuyersMessage = async () => {
+    const range = getVietnamDepositRange('month');
+    const total = sql<number>`coalesce(sum(${orders.total}), 0)`;
+    const rows = await db.select({ name: users.name, total, count: sql<number>`count(${orders.id})` }).from(orders)
+        .innerJoin(users, eq(orders.userId, users.id))
+        .where(and(eq(orders.status, 'completed'), gte(orders.createdAt, range.start)))
+        .groupBy(users.id).orderBy(desc(total)).limit(10);
+    const lines = rows.map((row, index) => `${index + 1}. ${TelegramService.escapeHtml(row.name)} — <b>${formatCurrency(Number(row.total))}</b> (${Number(row.count)} đơn)`);
+    return `🛍 <b>TOP MUA THÁNG ${range.label}</b>\n\n${lines.length ? lines.join('\n') : 'Chưa có đơn hoàn thành.'}`;
+};
+
+const customerMessage = async (query?: string) => {
+    if (!query) return 'Dùng <code>/khach ID</code> hoặc <code>/khach email</code>.';
+    const numericId = Number(query);
+    const customer = await db.query.users.findFirst({ where: Number.isInteger(numericId) && numericId > 0 ? eq(users.id, numericId) : like(users.email, `%${query}%`) });
+    if (!customer) return 'Không tìm thấy khách hàng.';
+    const [orderCount, depositCount, depositsTotal] = await Promise.all([
+        db.select({ count: sql<number>`count(*)` }).from(orders).where(eq(orders.userId, customer.id)),
+        db.select({ count: sql<number>`count(*)` }).from(transactions).where(and(eq(transactions.userId, customer.id), eq(transactions.type, 'deposit'), eq(transactions.status, 'completed'))),
+        db.select({ amount: sql<number>`coalesce(sum(${transactions.amount}), 0)` }).from(transactions).where(and(eq(transactions.userId, customer.id), eq(transactions.type, 'deposit'), eq(transactions.status, 'completed'))),
+    ]);
+    return `👤 <b>KHÁCH HÀNG #${customer.id}</b>\n\nTên: <b>${TelegramService.escapeHtml(customer.name)}</b>\nEmail: <code>${TelegramService.escapeHtml(customer.email)}</code>\nSố dư: <b>${formatCurrency(customer.balance)}</b>\nĐơn hàng: <b>${Number(orderCount[0]?.count || 0)}</b>\nĐã nạp: <b>${formatCurrency(Number(depositsTotal[0]?.amount || 0))}</b> (${Number(depositCount[0]?.count || 0)} GD)`;
+};
+
+const promotionsMessage = async () => {
+    const now = new Date().toISOString();
+    const end = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const rows = await db.select({ code: promotions.code, name: promotions.name, endDate: promotions.endDate, usedCount: promotions.usedCount, usageLimit: promotions.usageLimit })
+        .from(promotions).where(and(eq(promotions.active, true), gte(promotions.endDate, now), lte(promotions.endDate, end))).orderBy(promotions.endDate).limit(15);
+    const lines = rows.map(row => `• <code>${TelegramService.escapeHtml(row.code)}</code> — ${TelegramService.escapeHtml(row.name)}\n  Hết hạn: <b>${row.endDate}</b>${row.usageLimit ? ` | Đã dùng: ${row.usedCount}/${row.usageLimit}` : ''}`);
+    return `🎟 <b>KHUYẾN MÃI SẮP HẾT HẠN (7 NGÀY)</b>\n\n${lines.length ? lines.join('\n') : 'Không có mã nào sắp hết hạn.'}`;
+};
+
 const getDailyReportEnabled = async () => (await db.query.settings.findFirst({ where: eq(settings.key, DAILY_REPORT_SETTING) }))?.value === 'true';
 const setDailyReportEnabled = async (enabled: boolean) => {
     const existing = await db.query.settings.findFirst({ where: eq(settings.key, DAILY_REPORT_SETTING) });
@@ -153,6 +197,8 @@ export const TelegramService = {
                 { command: 'dashboard', description: 'Tổng quan vận hành hôm nay' }, { command: 'doncho', description: 'Đơn hàng và yêu cầu nạp đang chờ' },
                 { command: 'tonkho', description: 'Tồn kho sản phẩm thấp nhất' }, { command: 'health', description: 'Kiểm tra backend và database' },
                 { command: 'baocao', description: 'Báo cáo nhanh; bat/tat báo cáo ngày' },
+                { command: 'topnap', description: 'Top khách nạp tháng này' }, { command: 'topmua', description: 'Top khách mua tháng này' },
+                { command: 'khach', description: 'Tra cứu khách theo ID hoặc email' }, { command: 'khuyenmai', description: 'Mã khuyến mãi sắp hết hạn' },
             ] }) });
             console.log(`[Telegram] Webhook configured: ${webhookUrl}`); return true;
         } catch (error) { console.error('[Telegram] Webhook setup error:', error); return false; }
@@ -196,6 +242,10 @@ export const TelegramService = {
         if (command === '/doncho') return void await TelegramService.sendMessage(await pendingMessage(), sourceChatId);
         if (command === '/tonkho') return void await TelegramService.sendMessage(await stockMessage(), sourceChatId);
         if (command === '/health') return void await TelegramService.sendMessage(await healthMessage(), sourceChatId);
+        if (command === '/topnap') return void await TelegramService.sendMessage(await topDepositorsMessage(), sourceChatId);
+        if (command === '/topmua') return void await TelegramService.sendMessage(await topBuyersMessage(), sourceChatId);
+        if (command === '/khach') return void await TelegramService.sendMessage(await customerMessage(argumentsList[0]), sourceChatId);
+        if (command === '/khuyenmai') return void await TelegramService.sendMessage(await promotionsMessage(), sourceChatId);
         if (command === '/baocao') {
             const action = argumentsList[0]?.toLowerCase();
             if (action === 'bat') {
@@ -215,7 +265,7 @@ export const TelegramService = {
                 return void await TelegramService.sendMessage(`💰 <b>THỐNG KÊ NẠP TIỀN</b>\n\n${statisticLine(period === 'day' ? '📅' : period === 'month' ? '🗓' : '📊', titleByPeriod[period], statistic)}`, sourceChatId, mainKeyboard());
             } catch { return void await TelegramService.sendMessage(`Sai định dạng. Dùng: <code>${period === 'day' ? '/ngay dd/mm/yyyy' : period === 'month' ? '/thang mm/yyyy' : '/nam yyyy'}</code>`, sourceChatId); }
         }
-        if (command === '/start' || command === '/help') await TelegramService.sendMessage('🤖 <b>LỆNH QUẢN TRỊ AOV SHOP</b>\n\n/thongke — chọn thống kê nạp\n/dashboard — tổng quan hôm nay\n/doncho — đơn và nạp đang chờ\n/tonkho — tồn kho thấp\n/health — trạng thái hệ thống\n/baocao — báo cáo nhanh\n/baocao bat|tat — bật/tắt báo cáo 08:00 mỗi ngày', sourceChatId, mainKeyboard());
+        if (command === '/start' || command === '/help') await TelegramService.sendMessage('🤖 <b>LỆNH QUẢN TRỊ AOV SHOP</b>\n\n/thongke — chọn thống kê nạp\n/dashboard — tổng quan hôm nay\n/doncho — đơn và nạp đang chờ\n/tonkho — tồn kho thấp\n/topnap, /topmua — bảng xếp hạng tháng\n/khach ID|email — tra cứu khách\n/khuyenmai — mã sắp hết hạn\n/health — trạng thái hệ thống\n/baocao bat|tat — báo cáo 08:00 mỗi ngày', sourceChatId, mainKeyboard());
     },
 
     startDailyReportScheduler: () => {
