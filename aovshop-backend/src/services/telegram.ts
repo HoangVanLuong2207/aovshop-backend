@@ -158,6 +158,54 @@ const promotionsMessage = async () => {
     return `🎟 <b>KHUYẾN MÃI SẮP HẾT HẠN (7 NGÀY)</b>\n\n${lines.length ? lines.join('\n') : 'Không có mã nào sắp hết hạn.'}`;
 };
 
+const revenueMessage = async (requested?: string) => {
+    const period: DepositPeriod = requested === 'ngay' || requested === 'day' ? 'day' : requested === 'nam' || requested === 'year' ? 'year' : 'month';
+    const range = getVietnamDepositRange(period);
+    const [revenue, depositStats, refunded] = await Promise.all([
+        db.select({ count: sql<number>`count(*)`, amount: sql<number>`coalesce(sum(${orders.total}), 0)` }).from(orders).where(and(eq(orders.status, 'completed'), gte(orders.createdAt, range.start))),
+        getDepositStatistic(period),
+        db.select({ amount: sql<number>`coalesce(sum(abs(${transactions.amount})), 0)` }).from(transactions).where(and(eq(transactions.type, 'refund'), eq(transactions.status, 'completed'), gte(transactions.createdAt, range.start))),
+    ]);
+    return `💹 <b>DOANH THU ${titleByPeriod[period].toUpperCase()} ${range.label}</b>\n\nĐơn hoàn thành: <b>${Number(revenue[0]?.count || 0)}</b>\nDoanh thu đơn: <b>${formatCurrency(Number(revenue[0]?.amount || 0))}</b>\nNạp tiền: <b>${formatCurrency(depositStats.amount)}</b>\nHoàn tiền: <b>${formatCurrency(Number(refunded[0]?.amount || 0))}</b>`;
+};
+
+const recentUsersMessage = async () => {
+    const rows = await db.select({ id: users.id, name: users.name, email: users.email, createdAt: users.createdAt }).from(users).orderBy(desc(users.createdAt)).limit(10);
+    const lines = rows.map(row => `• #${row.id} <b>${TelegramService.escapeHtml(row.name)}</b> — <code>${TelegramService.escapeHtml(row.email)}</code>`);
+    return `🆕 <b>10 KHÁCH HÀNG MỚI NHẤT</b>\n\n${lines.length ? lines.join('\n') : 'Chưa có khách hàng.'}`;
+};
+
+const productMessage = async (id?: string) => {
+    const productId = Number(id);
+    if (!Number.isInteger(productId) || productId < 1) return 'Dùng <code>/sanpham ID</code>.';
+    const product = await db.query.products.findFirst({ where: eq(products.id, productId) });
+    if (!product) return 'Không tìm thấy sản phẩm.';
+    const [stock] = await db.select({ available: sql<number>`count(*)` }).from(productAccounts).where(and(eq(productAccounts.productId, product.id), eq(productAccounts.status, 'available')));
+    return `📦 <b>SẢN PHẨM #${product.id}</b>\n\n${TelegramService.escapeHtml(product.name)}\nGiá: <b>${formatCurrency(product.salePrice || product.price)}</b>\nTồn kho: <b>${Number(stock?.available || 0)}</b>\nĐã bán: <b>${product.soldCount}</b>\nTrạng thái: <b>${product.active ? 'Đang bán' : 'Đã tắt'}</b>${product.isPreorder ? '\nLoại: <b>Preorder</b>' : ''}`;
+};
+
+const banksMessage = async () => {
+    const rows = await db.select({ bankName: paymentAccounts.bankName, accountNumber: paymentAccounts.accountNumber, accountName: paymentAccounts.accountName, isActive: paymentAccounts.isActive }).from(paymentAccounts).orderBy(desc(paymentAccounts.isActive), paymentAccounts.bankName);
+    const lines = rows.map(bank => `• <b>${TelegramService.escapeHtml(bank.bankName)}</b> — ****${bank.accountNumber.slice(-4)} — ${TelegramService.escapeHtml(bank.accountName)}: ${bank.isActive ? '🟢 Bật' : '⚪ Tắt'}`);
+    return `🏦 <b>TÀI KHOẢN NHẬN TIỀN</b>\n\n${lines.length ? lines.join('\n') : 'Chưa cấu hình ngân hàng.'}`;
+};
+
+const failedTransactionsMessage = async () => {
+    const rows = await db.select({ id: transactions.id, type: transactions.type, amount: transactions.amount, description: transactions.description, createdAt: transactions.createdAt }).from(transactions).where(eq(transactions.status, 'failed')).orderBy(desc(transactions.createdAt)).limit(10);
+    const lines = rows.map(row => `• #${row.id} ${row.type} — <b>${formatCurrency(Math.abs(row.amount))}</b>${row.description ? ` — ${TelegramService.escapeHtml(row.description.slice(0, 60))}` : ''}`);
+    return `⚠️ <b>GIAO DỊCH LỖI GẦN ĐÂY</b>\n\n${lines.length ? lines.join('\n') : 'Không có giao dịch lỗi.'}`;
+};
+
+const alertsMessage = async () => {
+    const [pendingOrders, pendingDeposits, failedTransactions, productsWithStock] = await Promise.all([
+        db.select({ count: sql<number>`count(*)` }).from(orders).where(inArray(orders.status, ['pending', 'waiting'])),
+        db.select({ count: sql<number>`count(*)` }).from(deposits).where(eq(deposits.status, 'pending')),
+        db.select({ count: sql<number>`count(*)` }).from(transactions).where(eq(transactions.status, 'failed')),
+        db.select({ count: sql<number>`count(distinct ${productAccounts.productId})` }).from(productAccounts).where(eq(productAccounts.status, 'available')),
+    ]);
+    return `🚨 <b>CẢNH BÁO VẬN HÀNH</b>\n\n⏳ Đơn chờ: <b>${Number(pendingOrders[0]?.count || 0)}</b>\n💳 Nạp chờ: <b>${Number(pendingDeposits[0]?.count || 0)}</b>\n⚠️ Giao dịch lỗi: <b>${Number(failedTransactions[0]?.count || 0)}</b>\n📦 Sản phẩm còn tồn: <b>${Number(productsWithStock[0]?.count || 0)}</b>`;
+};
+
 const getDailyReportEnabled = async () => (await db.query.settings.findFirst({ where: eq(settings.key, DAILY_REPORT_SETTING) }))?.value === 'true';
 const setDailyReportEnabled = async (enabled: boolean) => {
     const existing = await db.query.settings.findFirst({ where: eq(settings.key, DAILY_REPORT_SETTING) });
@@ -199,6 +247,9 @@ export const TelegramService = {
                 { command: 'baocao', description: 'Báo cáo nhanh; bat/tat báo cáo ngày' },
                 { command: 'topnap', description: 'Top khách nạp tháng này' }, { command: 'topmua', description: 'Top khách mua tháng này' },
                 { command: 'khach', description: 'Tra cứu khách theo ID hoặc email' }, { command: 'khuyenmai', description: 'Mã khuyến mãi sắp hết hạn' },
+                { command: 'doanhthu', description: 'Doanh thu ngay/thang/nam' }, { command: 'nguoimoi', description: '10 khách hàng mới nhất' },
+                { command: 'sanpham', description: 'Tra cứu sản phẩm theo ID' }, { command: 'nganhang', description: 'Trạng thái tài khoản nhận tiền' },
+                { command: 'loi', description: 'Giao dịch lỗi gần đây' }, { command: 'canhbao', description: 'Tóm tắt cảnh báo vận hành' },
             ] }) });
             console.log(`[Telegram] Webhook configured: ${webhookUrl}`); return true;
         } catch (error) { console.error('[Telegram] Webhook setup error:', error); return false; }
@@ -246,6 +297,12 @@ export const TelegramService = {
         if (command === '/topmua') return void await TelegramService.sendMessage(await topBuyersMessage(), sourceChatId);
         if (command === '/khach') return void await TelegramService.sendMessage(await customerMessage(argumentsList[0]), sourceChatId);
         if (command === '/khuyenmai') return void await TelegramService.sendMessage(await promotionsMessage(), sourceChatId);
+        if (command === '/doanhthu') return void await TelegramService.sendMessage(await revenueMessage(argumentsList[0]?.toLowerCase()), sourceChatId);
+        if (command === '/nguoimoi') return void await TelegramService.sendMessage(await recentUsersMessage(), sourceChatId);
+        if (command === '/sanpham') return void await TelegramService.sendMessage(await productMessage(argumentsList[0]), sourceChatId);
+        if (command === '/nganhang') return void await TelegramService.sendMessage(await banksMessage(), sourceChatId);
+        if (command === '/loi') return void await TelegramService.sendMessage(await failedTransactionsMessage(), sourceChatId);
+        if (command === '/canhbao') return void await TelegramService.sendMessage(await alertsMessage(), sourceChatId);
         if (command === '/baocao') {
             const action = argumentsList[0]?.toLowerCase();
             if (action === 'bat') {
@@ -265,7 +322,7 @@ export const TelegramService = {
                 return void await TelegramService.sendMessage(`💰 <b>THỐNG KÊ NẠP TIỀN</b>\n\n${statisticLine(period === 'day' ? '📅' : period === 'month' ? '🗓' : '📊', titleByPeriod[period], statistic)}`, sourceChatId, mainKeyboard());
             } catch { return void await TelegramService.sendMessage(`Sai định dạng. Dùng: <code>${period === 'day' ? '/ngay dd/mm/yyyy' : period === 'month' ? '/thang mm/yyyy' : '/nam yyyy'}</code>`, sourceChatId); }
         }
-        if (command === '/start' || command === '/help') await TelegramService.sendMessage('🤖 <b>LỆNH QUẢN TRỊ AOV SHOP</b>\n\n/thongke — chọn thống kê nạp\n/dashboard — tổng quan hôm nay\n/doncho — đơn và nạp đang chờ\n/tonkho — tồn kho thấp\n/topnap, /topmua — bảng xếp hạng tháng\n/khach ID|email — tra cứu khách\n/khuyenmai — mã sắp hết hạn\n/health — trạng thái hệ thống\n/baocao bat|tat — báo cáo 08:00 mỗi ngày', sourceChatId, mainKeyboard());
+        if (command === '/start' || command === '/help') await TelegramService.sendMessage('🤖 <b>LỆNH QUẢN TRỊ AOV SHOP</b>\n\n/thongke — thống kê nạp\n/dashboard — tổng quan hôm nay\n/doncho, /loi, /canhbao — việc cần xử lý\n/tonkho, /sanpham ID — tồn kho/sản phẩm\n/topnap, /topmua — bảng xếp hạng\n/khach ID|email, /nguoimoi — khách hàng\n/doanhthu ngay|thang|nam — doanh thu\n/khuyenmai, /nganhang — cấu hình bán hàng\n/health — trạng thái hệ thống\n/baocao bat|tat — báo cáo 08:00 mỗi ngày', sourceChatId, mainKeyboard());
     },
 
     startDailyReportScheduler: () => {
