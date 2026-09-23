@@ -154,7 +154,7 @@
     <div class="settings-section">
       <h2>🤖 Telegram Bot (Thông báo Admin)</h2>
       <p style="color: var(--text-secondary); font-size: 0.9rem; margin-bottom: 1rem;">
-        Nhận thông báo đơn hàng và nạp tiền ngay lập tức qua Telegram. Không sợ bị chặn như trình duyệt.
+        Nhận thông báo tức thì và dùng /thongke, /ngay, /thang, /nam để xem thống kê nạp tiền.
       </p>
       
       <form @submit.prevent="saveSettings" class="settings-form">

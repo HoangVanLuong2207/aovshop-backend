@@ -53,6 +53,7 @@ AOVShop/
    | `TURSO_AUTH_TOKEN` | `eyJhbGciOiJFZERTQS...` |
    | `JWT_SECRET` | `your-secret-key-32-characters` |
    | `FRONTEND_URL` | `https://your-frontend.onrender.com` |
+   | `BACKEND_URL` | `https://your-backend.onrender.com` |
 6. Click **"Create Web Service"**
 7. Đợi deploy xong → Copy URL backend (vd: `https://aovshop-backend.onrender.com`)
 

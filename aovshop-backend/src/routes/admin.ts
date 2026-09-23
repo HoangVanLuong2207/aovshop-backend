@@ -1261,6 +1261,9 @@ router.post('/settings', async (req, res) => {
         }
 
         console.log(`[Admin] Settings updated: ${savedKeys.join(', ')}`);
+        if (savedKeys.includes('telegram_bot_token') || savedKeys.includes('telegram_chat_id')) {
+            void TelegramService.setupWebhook();
+        }
         res.json({ message: 'Cập nhật cài đặt thành công', saved: savedKeys });
     } catch (error) {
         console.error('[Admin] Error saving settings:', error);

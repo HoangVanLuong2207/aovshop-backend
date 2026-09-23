@@ -9,6 +9,8 @@ import shopRoutes from './routes/shop.js';
 import ordersRoutes from './routes/orders.js';
 import depositRoutes, { cleanupExpiredDeposits } from './routes/deposit.js';
 import adminRoutes from './routes/admin.js';
+import telegramRoutes from './routes/telegram.js';
+import { TelegramService } from './services/telegram.js';
 import cookieParser from 'cookie-parser';
 import { analyticsMiddleware } from './middleware/analytics.js';
 
@@ -135,6 +137,7 @@ app.use('/api/deposit', (req, res, next) => {
     return depositLimiter(req, res, next);
 }, depositRoutes);
 app.use('/api/admin', adminLimiter, adminRoutes); // 50 req/min
+app.use('/api/telegram', telegramRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -157,4 +160,5 @@ app.listen(PORT, async () => {
     if (expiredCount > 0) {
         console.log(`✅ Startup cleanup: ${expiredCount} expired deposit(s) processed`);
     }
+    await TelegramService.setupWebhook();
 });
