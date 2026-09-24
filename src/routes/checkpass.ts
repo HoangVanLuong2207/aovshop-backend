@@ -98,12 +98,15 @@ async function accountSnapshot(tx: any, userId: number) {
 }
 
 function publicSnapshot(snapshot: NonNullable<Awaited<ReturnType<typeof accountSnapshot>>>) {
+    const isAdmin = snapshot.user.role === 'admin';
     return {
         user: {
             id: snapshot.user.id,
             name: snapshot.user.name,
             email: snapshot.user.email,
+            role: snapshot.user.role,
         },
+        is_admin: isAdmin,
         balance: fromTenths(snapshot.balanceTenths),
         held_balance: fromTenths(snapshot.heldTenths),
         available_balance: fromTenths(snapshot.availableTenths),
