@@ -16,6 +16,8 @@ if (!process.env.AOVSHOP_SECURITY_TEST_DB?.startsWith('file:')) throw new Error(
 process.env.TURSO_DATABASE_URL = process.env.AOVSHOP_SECURITY_TEST_DB;
 delete process.env.TURSO_AUTH_TOKEN;
 process.env.JWT_SECRET = 'isolated-security-test-secret-not-for-production';
+process.env.CHECKPASS_SERVICE_TOKEN = 'isolated-checkpass-service-token';
+process.env.CHECKPASS_ALLOWED_ORIGINS = 'http://localhost:8787';
 delete process.env.BREVO_API_KEY;
 delete process.env.BREVO_SENDER_EMAIL;
 delete process.env.LICENSE_SERVER_URL;
@@ -23,7 +25,7 @@ delete process.env.ADMIN_EMAIL;
 delete process.env.ADMIN_PASSWORD;
 const { db, client } = await import('../src/db/index.js');
 const schema = await import('../src/db/schema.js');
-const { users, products, productAccounts, orders, transactions, deposits, paymentAccounts, settings, promotions } = schema;
+const { users, products, productAccounts, orders, transactions, deposits, paymentAccounts, settings, promotions, checkpassEntitlements } = schema;
 for (const table of Object.values(schema).filter(isTable)) {
     const config = getTableConfig(table as any);
     const columns = config.columns.map(c => `"${c.name}" ${c.getSQLType()}${c.primary ? ' PRIMARY KEY' : ''}${c.notNull ? ' NOT NULL' : ''}${c.isUnique ? ' UNIQUE' : ''}`);
@@ -34,6 +36,9 @@ app.use(express.json());
 app.use('/auth', (await import('../src/routes/auth.js')).default);
 app.use('/deposit', (await import('../src/routes/deposit.js')).default);
 app.use('/orders', (await import('../src/routes/orders.js')).default);
+const checkpassRoutes = await import('../src/routes/checkpass.js');
+app.use('/checkpass', checkpassRoutes.userCheckpassRouter);
+app.use('/integrations/checkpass', checkpassRoutes.checkpassIntegrationRouter);
 const server = app.listen(0, '127.0.0.1');
 await new Promise<void>(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${(server.address() as any).port}`;
@@ -63,12 +68,104 @@ async function webhook(payload: unknown, key = 'test-webhook-key') {
     const r = await fetch(base + '/deposit/webhook', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Apikey ${key}` }, body: JSON.stringify(payload) });
     return { status: r.status, body: await r.json() as any };
 }
+async function serviceRequest(route: string, body: unknown) {
+    return request(`/integrations/checkpass${route}`, body, process.env.CHECKPASS_SERVICE_TOKEN);
+}
 
 test('removed hardcoded administrator tokens are rejected', async () => {
     const legacyToken = jwt.sign({ userId: -2, role: 'admin' }, process.env.JWT_SECRET!);
     assert.equal((await request('/auth/profile', undefined, legacyToken)).status, 401);
 });
 
+test('Checkpass SSO tickets are one-time and scoped to the callback origin', async () => {
+    const u = await user(10000);
+    const denied = await request('/checkpass/sso/ticket', { return_url: 'https://evil.example/auth/callback' }, u.token);
+    assert.equal(denied.status, 400);
+
+    const state = 'state_abcdefghijklmnopqrstuvwxyz123456';
+    const ticket = await request('/checkpass/sso/ticket', { return_url: `http://localhost:8787/auth/callback?state=${state}` }, u.token);
+    assert.equal(ticket.status, 200);
+    const code = new URL(ticket.body.redirect_url).searchParams.get('code');
+    assert.ok(code);
+    assert.equal(new URL(ticket.body.redirect_url).searchParams.get('state'), state);
+    const first = await serviceRequest('/sso/exchange', { code });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.user.id, u.id);
+    assert.equal(first.body.balance, 10000);
+    assert.equal((await serviceRequest('/sso/exchange', { code })).status, 401);
+});
+
+test('quantity billing holds the maximum and charges exactly 0.3 VND per OK account', async () => {
+    const u = await user(10000);
+    const reference = `quantity-${++seq}`;
+    const reserveBody = {
+        user_id: u.id, external_job_reference: reference, submitted_count: 2,
+        idempotency_key: `reserve:${reference}`,
+    };
+    const reserved = await serviceRequest('/quantity/reserve', reserveBody);
+    assert.equal(reserved.status, 200);
+    assert.equal(reserved.body.estimated_amount_tenths, 6);
+    assert.equal(reserved.body.available_balance, 9999.4);
+    assert.equal((await serviceRequest('/quantity/reserve', reserveBody)).body.hold_id, reserved.body.hold_id);
+
+    const settleBody = {
+        user_id: u.id, external_job_reference: reference, ok_count: 1, fail_count: 1,
+        uncheckable_count: 0, idempotency_key: `settle:${reference}`, master_job_id: 101,
+    };
+    const settled = await serviceRequest('/quantity/settle', settleBody);
+    assert.equal(settled.status, 200);
+    assert.equal(settled.body.final_amount_tenths, 3);
+    assert.equal(settled.body.balance, 9999.7);
+    const repeated = await serviceRequest('/quantity/settle', settleBody);
+    assert.equal(repeated.body.order_id, settled.body.order_id);
+    assert.equal((await db.query.users.findFirst({ where: eq(users.id, u.id) }))!.balanceTenths, 99997);
+    assert.equal((await db.query.orders.findMany({ where: eq(orders.userId, u.id) })).length, 1);
+});
+
+test('active time entitlement allows another time job without a second charge', async () => {
+    const u = await user(10000);
+    const firstRef = `time-first-${++seq}`;
+    const first = await serviceRequest('/time/activate', {
+        user_id: u.id, external_job_reference: firstRef, block_count: 1,
+        idempotency_key: `time:${firstRef}`,
+    });
+    assert.equal(first.status, 200);
+    assert.equal(first.body.charged, true);
+    assert.equal(first.body.amount_tenths, 50000);
+    assert.equal(first.body.balance, 5000);
+
+    const secondRef = `time-covered-${++seq}`;
+    const quote = await serviceRequest('/quote', { mode: 'time', user_id: u.id, block_count: 2 });
+    assert.equal(quote.body.covered_by_time, true);
+    assert.equal(quote.body.amount_tenths, 0);
+    const covered = await serviceRequest('/time/activate', {
+        user_id: u.id, external_job_reference: secondRef, block_count: 2,
+        idempotency_key: `time:${secondRef}`,
+    });
+    assert.equal(covered.status, 200);
+    assert.equal(covered.body.charged, false);
+    assert.equal(covered.body.balance, 5000);
+    assert.equal((await db.query.orders.findMany({ where: eq(orders.userId, u.id) })).length, 1);
+});
+
+test('shop Checkpass packages use the fixed 5,000 VND per 30 minutes price', async () => {
+    const u = await user(10000);
+    const p = await product({ checkpassHours: 0.5, price: 1 });
+    const promoCode = `NOCP${++seq}`;
+    await db.insert(promotions).values({ code: promoCode, name: promoCode, type: 'fixed', value: 1000 });
+    const rejected = await request('/orders/checkout', {
+        items: [{ product_id: p.id, quantity: 1 }], promo_code: promoCode,
+    }, u.token);
+    assert.equal(rejected.status, 400);
+
+    const result = await request('/orders/checkout', { items: [{ product_id: p.id, quantity: 1 }] }, u.token);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.order.total, 5000);
+    assert.equal((await db.query.users.findFirst({ where: eq(users.id, u.id) }))!.balance, 5000);
+    const entitlement = await db.query.checkpassEntitlements.findFirst({ where: eq(checkpassEntitlements.userId, u.id) });
+    assert.equal(entitlement!.durationMinutes, 30);
+    assert.equal(entitlement!.blockCount, 1);
+});
 test('deposit history does not expose webhook secrets', async () => {
     const p = await payment();
     const r = await request('/deposit/history', undefined, p.u.token);

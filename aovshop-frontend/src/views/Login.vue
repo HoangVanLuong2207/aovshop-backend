@@ -42,7 +42,7 @@
 
       <p class="auth-footer">
         Chưa có tài khoản? 
-        <router-link to="/register">Đăng ký ngay</router-link>
+        <router-link :to="{ name: 'register', query: route.query.redirect ? { redirect: route.query.redirect } : {} }">Đăng ký ngay</router-link>
       </p>
     </div>
   </div>
@@ -65,14 +65,18 @@ const form = reactive({
   password: '',
 })
 
+const safeRedirect = () => {
+  const value = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  return value.startsWith('/') && !value.startsWith('//') ? value : (authStore.isAdmin ? '/admin' : '/')
+}
+
 const handleLogin = async () => {
   loading.value = true
   error.value = ''
   
   try {
     await authStore.login(form)
-    const redirect = route.query.redirect || (authStore.isAdmin ? '/admin' : '/')
-    router.push(redirect)
+    router.push(safeRedirect())
   } catch (err) {
     error.value = err.response?.data?.message || 'Đăng nhập thất bại'
   } finally {
@@ -85,8 +89,7 @@ const handleGoogleLogin = async (credential) => {
   error.value = ''
   try {
     await authStore.googleLogin(credential)
-    const redirect = route.query.redirect || (authStore.isAdmin ? '/admin' : '/')
-    router.push(redirect)
+    router.push(safeRedirect())
   } catch (err) {
     error.value = err.response?.data?.message || 'Đăng nhập Google thất bại'
   } finally {

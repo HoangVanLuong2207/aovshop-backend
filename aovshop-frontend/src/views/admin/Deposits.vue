@@ -119,7 +119,9 @@ const totalPages = ref(0)
 const formatPrice = (price) => {
   return new Intl.NumberFormat('vi-VN', {
     style: 'currency',
-    currency: 'VND'
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1
   }).format(price || 0)
 }
 
@@ -272,9 +274,30 @@ code {
 }
 
 @media (max-width: 768px) {
+  .page-header {
+    align-items: stretch;
+  }
+
+  .page-header .btn {
+    width: 100%;
+  }
+
+  .filters {
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0.875rem;
+  }
+
+  .filter-group,
+  .filter-group .form-input {
+    width: 100%;
+  }
+
   .table thead { display: none; }
-  .table tr { display: block; margin-bottom: 1rem; border: 1px solid var(--border); border-radius: 8px; padding: 1rem; }
-  .table td { display: flex; justify-content: space-between; border: none; padding: 0.5rem 0; }
-  .table td::before { content: attr(data-label); font-weight: 600; color: var(--text-secondary); }
+  .table tr { display: block; margin-bottom: 0.75rem; border: 1px solid var(--border); border-radius: 12px; padding: 0.875rem; background: var(--bg-secondary); }
+  .table td { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.5rem; border: none; border-bottom: 1px solid var(--border); padding: 0.625rem 0; text-align: right; overflow-wrap: anywhere; }
+  .table td:last-child { border-bottom: 0; justify-content: center; padding-top: 0.875rem; }
+  .table td::before { content: attr(data-label); font-weight: 600; color: var(--text-secondary); text-align: left; flex-shrink: 0; }
+  .table td:last-child .btn { flex: 1; }
 }
 </style>

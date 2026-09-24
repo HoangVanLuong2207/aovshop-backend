@@ -62,7 +62,7 @@
 
       <p class="auth-footer">
         Đã có tài khoản? 
-        <router-link to="/login">Đăng nhập</router-link>
+        <router-link :to="{ name: 'login', query: route.query.redirect ? { redirect: route.query.redirect } : {} }">Đăng nhập</router-link>
       </p>
     </div>
   </div>
@@ -70,13 +70,14 @@
 
 <script setup>
 import { ref, reactive } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import api from '../api'
 import { useToast } from '../composables/useToast'
 import GoogleSignInButton from '../components/GoogleSignInButton.vue'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const { toast } = useToast()
 
@@ -90,6 +91,11 @@ const form = reactive({
   password: '',
   password_confirmation: '',
 })
+
+const safeRedirect = () => {
+  const value = typeof route.query.redirect === 'string' ? route.query.redirect : ''
+  return value.startsWith('/') && !value.startsWith('//') ? value : (authStore.isAdmin ? '/admin' : '/')
+}
 
 const handleRegister = async () => {
   if (form.password !== form.password_confirmation) {
@@ -108,7 +114,7 @@ const handleRegister = async () => {
     })
     
     toast.success('Đăng ký thành công!')
-    router.push(authStore.isAdmin ? '/admin' : '/')
+    router.push(safeRedirect())
   } catch (err) {
     error.value = err.response?.data?.message || 'Đăng ký thất bại'
   } finally {
@@ -122,7 +128,7 @@ const handleGoogleLogin = async (credential) => {
   try {
     await authStore.googleLogin(credential)
     toast.success('Đăng nhập Google thành công!')
-    router.push(authStore.isAdmin ? '/admin' : '/')
+    router.push(safeRedirect())
   } catch (err) {
     error.value = err.response?.data?.message || 'Đăng nhập Google thất bại'
   } finally {

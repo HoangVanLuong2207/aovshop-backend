@@ -4,6 +4,7 @@ import { categories, products, settings, orders, transactions, users } from '../
 import { eq, and, like, desc, asc, sql, isNotNull, gte, lt } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
+import { CHECKPASS_BLOCK_MINUTES, CHECKPASS_BLOCK_PRICE_TENTHS, fromTenths } from '../services/money.js';
 
 const router = Router();
 
@@ -190,12 +191,17 @@ router.post('/push/subscribe-auth', authMiddleware, async (req: AuthRequest, res
 });
 
 // Helper to map product fields
-const mapProduct = (p: any) => ({
+const mapProduct = (p: any) => {
+    const durationMinutes = Math.round(Number(p.checkpassHours || 0) * 60);
+    const fixedCheckpassPrice = durationMinutes >= CHECKPASS_BLOCK_MINUTES && durationMinutes % CHECKPASS_BLOCK_MINUTES === 0
+        ? fromTenths((durationMinutes / CHECKPASS_BLOCK_MINUTES) * CHECKPASS_BLOCK_PRICE_TENTHS)
+        : null;
+    return ({
     id: p.id,
     name: p.name,
     description: p.description,
-    price: p.price,
-    sale_price: p.salePrice,
+    price: fixedCheckpassPrice ?? p.price,
+    sale_price: fixedCheckpassPrice == null ? p.salePrice : null,
     stock: p.stock,
     sold_count: p.soldCount,
     image: p.image,
@@ -209,7 +215,8 @@ const mapProduct = (p: any) => ({
     checkpass_hours: p.checkpassHours || null,
     created_at: p.createdAt,
     category: p.category,
-});
+    });
+};
 
 // Get all categories
 router.get('/categories', async (req, res) => {

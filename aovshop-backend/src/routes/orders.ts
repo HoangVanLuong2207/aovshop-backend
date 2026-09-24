@@ -1,31 +1,15 @@
 import { Router } from 'express';
 import { db } from '../db/index.js';
-import { orders, orderItems, products, users, transactions, promotions, productAccounts } from '../db/schema.js';
+import { balanceHolds, checkpassEntitlements, orders, orderItems, products, users, transactions, promotions, productAccounts } from '../db/schema.js';
 import { eq, desc, and, gte, lte, inArray, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
+import { CHECKPASS_BLOCK_MINUTES, CHECKPASS_BLOCK_PRICE_TENTHS, fromTenths, storedBalanceTenths, toTenths } from '../services/money.js';
 
 const router = Router();
 class CheckoutError extends Error {
     constructor(public status: number, message: string) { super(message); }
-}
-
-
-const CHECKPASS_URL = (process.env.CHECKPASS_URL || 'https://check.sp1s.shop').replace(/\/$/, '');
-
-async function issueCheckpassKey(orderId: number, productId: number, durationHours: number, customerEmail?: string) {
-    const licenseServerUrl = (process.env.LICENSE_SERVER_URL || '').replace(/\/$/, '');
-    const issuerToken = process.env.LICENSE_SERVER_ISSUER_TOKEN || '';
-    if (!licenseServerUrl || !issuerToken) throw new Error('Chưa cấu hình LICENSE_SERVER_URL hoặc LICENSE_SERVER_ISSUER_TOKEN');
-    const response = await fetch(`${licenseServerUrl}/api/integrations/aovshop/checkpass-keys`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-AOVShop-Issuer-Token': issuerToken },
-        body: JSON.stringify({ order_id: orderId, product_id: productId, duration_hours: durationHours, customer_email: customerEmail || undefined }),
-        signal: AbortSignal.timeout(10_000),
-    });
-    const body: any = await response.json().catch(() => ({}));
-    if (!response.ok || !body.key || !body.expires_at) throw new Error(body.detail || body.message || `License Server trả lỗi HTTP ${response.status}`);
-    return { key: String(body.key), expiresAt: String(body.expires_at), url: `${CHECKPASS_URL}/?key=${encodeURIComponent(String(body.key))}` };
 }
 
 const parsePromotionProductIds = (raw: string | null) => {
@@ -292,7 +276,14 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                     allTargetAccounts.push(...availableAccounts);
                 }
 
-                const price = product.salePrice ?? product.price;
+                let price = product.salePrice ?? product.price;
+                if (checkpassHours > 0) {
+                    const durationMinutes = Math.round(checkpassHours * 60);
+                    if (durationMinutes < CHECKPASS_BLOCK_MINUTES || durationMinutes % CHECKPASS_BLOCK_MINUTES !== 0) {
+                        throw new CheckoutError(400, 'Gói Checkpass phải là bội số của 30 phút');
+                    }
+                    price = fromTenths((durationMinutes / CHECKPASS_BLOCK_MINUTES) * CHECKPASS_BLOCK_PRICE_TENTHS);
+                }
                 if (!Number.isFinite(price) || price < 0) throw new CheckoutError(400, 'Giá sản phẩm không hợp lệ');
                 const itemTotal = price * quantity;
                 subtotal += itemTotal;
@@ -355,10 +346,16 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             }
 
             const orderType = hasPreorder ? 'preorder' : 'instant';
+            const hasCheckpassProduct = orderProducts.some(
+                (item: any) => Number(item.product.checkpassHours || 0) > 0,
+            );
 
             // Apply promotion
             let discount = 0;
             if (promo_code) {
+                if (hasCheckpassProduct) {
+                    throw new CheckoutError(400, 'Gói Checkpass có giá cố định 5.000đ/30 phút và không áp dụng mã giảm giá');
+                }
                 const promo = await tx.query.promotions.findFirst({
                     where: and(
                         eq(promotions.code, promo_code),
@@ -390,8 +387,21 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             const total = subtotal - discount;
             if (!Number.isSafeInteger(total) || total < 0) throw new CheckoutError(400, 'Tổng tiền không hợp lệ');
 
+            const subtotalTenths = toTenths(subtotal);
+            const discountTenths = toTenths(discount);
+            const totalTenths = subtotalTenths - discountTenths;
+            const userBalanceTenths = storedBalanceTenths(user);
+            const activeHolds = await tx.select({ total: sql<number>`COALESCE(SUM(${balanceHolds.amountTenths}), 0)` })
+                .from(balanceHolds)
+                .where(and(
+                    eq(balanceHolds.userId, user.id),
+                    eq(balanceHolds.status, 'active'),
+                    sql`${balanceHolds.expiresAt} > ${new Date().toISOString()}`,
+                ));
+            const heldTenths = Number(activeHolds[0]?.total || 0);
+
             // Check balance
-            if (user.balance < total) {
+            if (userBalanceTenths - heldTenths < totalTenths) {
                 throw new CheckoutError(400, 'Số dư không đủ');
             }
 
@@ -406,6 +416,10 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 subtotal,
                 discount,
                 total,
+                subtotalTenths,
+                discountTenths,
+                totalTenths,
+                source: hasCheckpassProduct ? 'checkban_time' : 'shop',
                 promoCode: promo_code || null,
                 note: note || null,
                 customerNote: customer_note || null,
@@ -421,6 +435,8 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                     quantity: item.quantity,
                     price: item.price,
                     total: item.total,
+                    priceTenths: toTenths(item.price),
+                    totalTenths: toTenths(item.total),
                 });
 
                 // Only manage accounts for instant (non-preorder) items
@@ -466,10 +482,14 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             }
 
             // Update user balance (charged immediately)
-            const newBalance = user.balance - total;
+            const newBalanceTenths = userBalanceTenths - totalTenths;
+            const newBalance = fromTenths(newBalanceTenths);
             const charged = await tx.update(users)
-                .set({ balance: sql`${users.balance} - ${total}` })
-                .where(and(eq(users.id, user.id), gte(users.balance, total)))
+                .set({ balance: newBalance, balanceTenths: newBalanceTenths })
+                .where(and(
+                    eq(users.id, user.id),
+                    sql`COALESCE(${users.balanceTenths}, ROUND(${users.balance} * 10)) - ${heldTenths} >= ${totalTenths}`,
+                ))
                 .returning({ id: users.id });
             if (charged.length !== 1) throw new CheckoutError(400, 'Số dư không đủ');
 
@@ -478,8 +498,11 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 userId: user.id,
                 type: 'purchase',
                 amount: -total,
-                balanceBefore: user.balance,
+                amountTenths: -totalTenths,
+                balanceBefore: fromTenths(userBalanceTenths),
                 balanceAfter: newBalance,
+                balanceBeforeTenths: userBalanceTenths,
+                balanceAfterTenths: newBalanceTenths,
                 status: 'completed',
                 description: orderType === 'preorder'
                     ? `Đặt hàng pre-order #${order.id}`
@@ -487,25 +510,57 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 orderId: order.id,
             });
 
+            const checkpassMinutes = orderProducts.reduce(
+                (sum: number, item: any) => sum + Math.round(Number(item.product.checkpassHours || 0) * 60) * item.quantity,
+                0,
+            );
+            if (checkpassMinutes > 0) {
+                const now = new Date();
+                const current = await tx.query.checkpassEntitlements.findFirst({
+                    where: and(
+                        eq(checkpassEntitlements.userId, user.id),
+                        eq(checkpassEntitlements.status, 'active'),
+                        sql`${checkpassEntitlements.expiresAt} > ${now.toISOString()}`,
+                    ),
+                    orderBy: desc(checkpassEntitlements.expiresAt),
+                });
+                const startsAt = current ? new Date(current.expiresAt) : now;
+                const expiresAt = new Date(startsAt.getTime() + checkpassMinutes * 60_000);
+                const blocks = checkpassMinutes / CHECKPASS_BLOCK_MINUTES;
+                const [entitlement] = await tx.insert(checkpassEntitlements).values({
+                    userId: user.id,
+                    blockCount: blocks,
+                    durationMinutes: checkpassMinutes,
+                    startsAt: startsAt.toISOString(),
+                    expiresAt: expiresAt.toISOString(),
+                    orderId: order.id,
+                    source: 'aovshop',
+                    externalReference: `shop-order:${order.id}`,
+                    createdAt: now.toISOString(),
+                }).returning();
+                const deliveryData = JSON.stringify({
+                    type: 'checkpass_entitlement',
+                    entitlement_id: entitlement.id,
+                    block_count: blocks,
+                    duration_minutes: checkpassMinutes,
+                    starts_at: startsAt.toISOString(),
+                    expires_at: expiresAt.toISOString(),
+                    url: process.env.CHECKPASS_URL || 'https://check.sp1s.shop',
+                });
+                await tx.update(orders).set({
+                    externalReference: `shop-order:${order.id}`,
+                    metadata: deliveryData,
+                    deliveryData,
+                    deliveredAt: now.toISOString(),
+                }).where(eq(orders.id, order.id));
+                order.externalReference = `shop-order:${order.id}`;
+                order.metadata = deliveryData;
+                order.deliveryData = deliveryData;
+                order.deliveredAt = now.toISOString();
+            }
+
             return { order, user, orderProducts, orderType };
         });
-
-        const checkpassItems = orderProducts.filter((item: any) => Number(item.product.checkpassHours || 0) > 0);
-        if (checkpassItems.length > 0) {
-            const durationHours = checkpassItems.reduce((total: number, item: any) => total + Number(item.product.checkpassHours) * item.quantity, 0);
-            try {
-                const license = await issueCheckpassKey(order.id, checkpassItems[0].product.id, durationHours, user.email);
-                const deliveryData = JSON.stringify({ type: 'checkpass_license', key: license.key, expires_at: license.expiresAt, url: license.url, duration_hours: durationHours });
-                await db.update(orders).set({ deliveryData, deliveredAt: new Date().toISOString() }).where(eq(orders.id, order.id));
-                order.deliveryData = deliveryData;
-                order.deliveredAt = new Date().toISOString();
-            } catch (issueError) {
-                console.error(`[Checkpass license] Could not issue key for order #${order.id}:`, issueError);
-                const deliveryData = JSON.stringify({ type: 'checkpass_pending', error: 'Đang cấp key, vui lòng liên hệ hỗ trợ nếu chưa nhận được.' });
-                await db.update(orders).set({ deliveryData }).where(eq(orders.id, order.id));
-                order.deliveryData = deliveryData;
-            }
-        }
 
         // Notify Admin
         const orderLabel = orderType === 'preorder' ? 'PRE-ORDER' : 'MỚI';

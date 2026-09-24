@@ -16,6 +16,7 @@ import Checkout from '../views/Checkout.vue'
 import Orders from '../views/Orders.vue'
 import Deposit from '../views/Deposit.vue'
 import Profile from '../views/Profile.vue'
+import CheckpassConnect from '../views/CheckpassConnect.vue'
 
 // Admin views
 import AdminLayout from '../views/admin/AdminLayout.vue'
@@ -69,6 +70,12 @@ const routes = [
         path: '/profile',
         name: 'profile',
         component: Profile,
+        meta: { requiresAuth: true },
+    },
+    {
+        path: '/checkpass/connect',
+        name: 'checkpass-connect',
+        component: CheckpassConnect,
         meta: { requiresAuth: true },
     },
 

@@ -189,7 +189,9 @@ const recentTransactions = ref([])
 const formatPrice = (price) => {
   return new Intl.NumberFormat('vi-VN', {
     style: 'currency',
-    currency: 'VND'
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1
   }).format(price || 0)
 }
 
@@ -240,16 +242,27 @@ onMounted(async () => {
 
 @media (max-width: 480px) {
   .stats-grid {
-    grid-template-columns: 1fr;
-    gap: 1rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
   }
   
   .stat-card {
-    padding: 1rem;
+    padding: 0.875rem;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.625rem;
+    min-width: 0;
   }
   
   .stat-value {
-    font-size: 1.25rem;
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+  }
+
+  .stat-icon {
+    width: 38px;
+    height: 38px;
+    font-size: 1.15rem;
   }
 }
 
@@ -308,11 +321,13 @@ onMounted(async () => {
 
 @media (max-width: 480px) {
   .actions-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
   }
   
   .action-btn {
-    padding: 1rem;
+    padding: 0.875rem 0.625rem;
+    font-size: 0.85rem;
   }
 }
 
@@ -365,6 +380,26 @@ onMounted(async () => {
 
 .table-responsive {
   width: 100%;
+}
+
+@media (max-width: 768px) {
+  .dashboard {
+    max-width: 100%;
+  }
+
+  .table-responsive {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table-responsive .table {
+    min-width: 620px;
+  }
+
+  .recent-activity .card-header {
+    padding: 0.875rem;
+  }
 }
 
 .text-sm {

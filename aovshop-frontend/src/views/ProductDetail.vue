@@ -240,7 +240,9 @@ const stockText = computed(() => {
 const formatPrice = (price) => {
   return new Intl.NumberFormat('vi-VN', {
     style: 'currency',
-    currency: 'VND'
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1
   }).format(price)
 }
 

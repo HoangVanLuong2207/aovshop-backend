@@ -74,7 +74,29 @@
             <pre class="cnote-content">{{ order.customer_note }}</pre>
           </div>
 
-          <div v-if="isCheckpassLicense(order)" class="delivery-box">
+          <div v-if="isCheckbanUsage(order)" class="delivery-box">
+            <div class="delivery-header">🧾 Chi tiết Checkban</div>
+            <template v-if="checkpassLicense(order).type === 'checkban_quantity'">
+              <p>Job #{{ checkpassLicense(order).master_job_id }} · {{ checkpassLicense(order).ok_count }} tài khoản OK × {{ checkpassLicense(order).unit_price }}đ</p>
+              <p class="delivery-time">Đã gửi: {{ checkpassLicense(order).submitted_count }} · Không thể log: {{ checkpassLicense(order).fail_count }} · Chưa thể check: {{ checkpassLicense(order).uncheckable_count }}</p>
+            </template>
+            <template v-else>
+              <p>{{ checkpassLicense(order).duration_minutes }} phút ({{ checkpassLicense(order).block_count }} block 30 phút)</p>
+              <p class="delivery-time">Bắt đầu: {{ formatDate(checkpassLicense(order).starts_at) }}</p>
+              <p class="delivery-time">Hết hạn: {{ formatDate(checkpassLicense(order).expires_at) }}</p>
+            </template>
+            <a class="btn btn-sm btn-primary mt-2" href="https://check.sp1s.shop">Mở Checkpass →</a>
+          </div>
+
+          <div v-else-if="isCheckpassEntitlement(order)" class="delivery-box">
+            <div class="delivery-header">🛡️ Quyền sử dụng Checkpass đã kích hoạt</div>
+            <p><strong>{{ checkpassLicense(order).duration_minutes }} phút</strong> ({{ checkpassLicense(order).block_count }} block)</p>
+            <p class="delivery-time">Bắt đầu: {{ formatDate(checkpassLicense(order).starts_at) }}</p>
+            <p class="delivery-time">Hết hạn: {{ formatDate(checkpassLicense(order).expires_at) }}</p>
+            <a class="btn btn-sm btn-primary mt-2" :href="checkpassLicense(order).url || 'https://check.sp1s.shop'">Mở Checkpass →</a>
+          </div>
+
+          <div v-else-if="isCheckpassLicense(order)" class="delivery-box">
             <div class="delivery-header">🔑 Key Checkpass của bạn:</div>
             <code class="delivery-content">{{ checkpassLicense(order).key }}</code>
             <p class="delivery-time">⏳ Hết hạn: {{ formatDate(checkpassLicense(order).expires_at) }}</p>
@@ -168,7 +190,9 @@ const pagination = reactive({
 const formatPrice = (price) => {
   return new Intl.NumberFormat('vi-VN', {
     style: 'currency',
-    currency: 'VND'
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1
   }).format(price)
 }
 
@@ -233,6 +257,8 @@ const checkpassLicense = (order) => {
 
 const isCheckpassLicense = (order) => checkpassLicense(order).type === 'checkpass_license'
 const isCheckpassPending = (order) => checkpassLicense(order).type === 'checkpass_pending'
+const isCheckpassEntitlement = (order) => checkpassLicense(order).type === 'checkpass_entitlement'
+const isCheckbanUsage = (order) => ['checkban_quantity', 'checkban_time'].includes(checkpassLicense(order).type)
 
 const accountPreview = (accounts) => accounts.slice(0, previewAccountLimit)
 

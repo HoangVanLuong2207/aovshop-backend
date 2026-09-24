@@ -6,6 +6,7 @@ import { eq, and, lt, sql, inArray } from 'drizzle-orm';
 import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
+import { fromTenths, storedBalanceTenths, toTenths } from '../services/money.js';
 
 const router = Router();
 
@@ -234,17 +235,22 @@ router.post('/webhook', async (req, res) => {
                 return { error: 'Deposit is unavailable or amount does not match' };
             }
             const user = await tx.query.users.findFirst({ where: eq(users.id, userId) });
-            if (!user || !Number.isSafeInteger(user.balance + amount)) return { error: 'Invalid balance' };
+            if (!user) return { error: 'Invalid balance' };
+            const beforeTenths = storedBalanceTenths(user);
+            const amountTenths = toTenths(amount);
+            const afterTenths = beforeTenths + amountTenths;
+            if (!Number.isSafeInteger(afterTenths)) return { error: 'Invalid balance' };
             const claimed = await tx.update(deposits)
                 .set({ status: 'completed', transactionId: String(transactionId), updatedAt: new Date().toISOString() })
                 .where(and(eq(deposits.id, deposit.id), inArray(deposits.status, ['pending', 'expired'])))
                 .returning({ id: deposits.id });
             if (claimed.length !== 1) throw new Error('Deposit changed during processing');
             await tx.insert(paymentWebhookEvents).values({ id: eventId, depositId: deposit.id });
-            await tx.update(users).set({ balance: sql`${users.balance} + ${amount}` }).where(eq(users.id, userId));
+            await tx.update(users).set({ balance: fromTenths(afterTenths), balanceTenths: afterTenths }).where(eq(users.id, userId));
             await tx.insert(transactions).values({
-                userId, type: 'deposit', amount, balanceBefore: user.balance,
-                balanceAfter: user.balance + amount, status: 'completed',
+                userId, type: 'deposit', amount, amountTenths,
+                balanceBefore: fromTenths(beforeTenths), balanceBeforeTenths: beforeTenths,
+                balanceAfter: fromTenths(afterTenths), balanceAfterTenths: afterTenths, status: 'completed',
                 description: 'Nạp tiền tự động qua SePay', reference: String(transactionId),
             });
             return { success: true };
@@ -322,7 +328,7 @@ router.get('/history', authMiddleware, async (req: AuthRequest, res) => {
 router.get('/balance', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const user = await db.query.users.findFirst({ where: eq(users.id, req.user!.id) });
-        res.json({ balance: user?.balance || 0 });
+        res.json({ balance: user ? fromTenths(storedBalanceTenths(user)) : 0 });
     } catch (error) {
         res.status(500).json({ message: 'Error' });
     }

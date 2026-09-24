@@ -6,6 +6,7 @@ import { categories, products, promotions, orders, orderItems, transactions, use
 import { eq, desc, sql, and, or, inArray, gte, lte, like, lt } from 'drizzle-orm';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
+import { CHECKPASS_BLOCK_MINUTES, fromTenths, storedBalanceTenths, toTenths } from '../services/money.js';
 
 
 const router = Router();
@@ -193,7 +194,8 @@ router.post('/products', async (req, res) => {
     try {
         const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity, checkpass_hours } = req.body;
         const checkpassHours = Number(checkpass_hours ?? 0);
-        if (!Number.isFinite(checkpassHours) || checkpassHours < 0 || checkpassHours > 8760) {
+        if (!Number.isFinite(checkpassHours) || checkpassHours < 0 || checkpassHours > 8760 ||
+            (checkpassHours > 0 && Math.round(checkpassHours * 60) % CHECKPASS_BLOCK_MINUTES !== 0)) {
             res.status(400).json({ message: 'Số giờ Checkpass phải từ 0 đến 8760 (0.5 = 30 phút)' });
             return;
         }
@@ -235,7 +237,8 @@ const handleProductUpdate = async (req: any, res: any) => {
     try {
         const { category_id, name, description, price, sale_price, stock, image, active, images, is_preorder, daily_buy_limit, minimum_order_quantity, checkpass_hours } = req.body;
         const checkpassHours = Number(checkpass_hours ?? 0);
-        if (!Number.isFinite(checkpassHours) || checkpassHours < 0 || checkpassHours > 8760) {
+        if (!Number.isFinite(checkpassHours) || checkpassHours < 0 || checkpassHours > 8760 ||
+            (checkpassHours > 0 && Math.round(checkpassHours * 60) % CHECKPASS_BLOCK_MINUTES !== 0)) {
             res.status(400).json({ message: 'Số giờ Checkpass phải từ 0 đến 8760 (0.5 = 30 phút)' });
             return;
         }
@@ -1106,8 +1109,11 @@ router.post('/deposits/:id/approve', async (req, res) => {
 
             const user = deposit.user;
             const amount = deposit.amount;
-            const currentBalance = user.balance || 0;
-            const newBalance = currentBalance + amount;
+            const currentBalanceTenths = storedBalanceTenths(user);
+            const amountTenths = toTenths(amount);
+            const newBalanceTenths = currentBalanceTenths + amountTenths;
+            const currentBalance = fromTenths(currentBalanceTenths);
+            const newBalance = fromTenths(newBalanceTenths);
 
             // Claim the deposit before crediting it: a webhook may be settling it concurrently.
             const claimed = await tx.update(deposits).set({
@@ -1117,15 +1123,18 @@ router.post('/deposits/:id/approve', async (req, res) => {
               .returning({ id: deposits.id });
             if (claimed.length !== 1) throw new Error('Đơn nạp đã hoàn thành trước đó');
 
-            await tx.update(users).set({ balance: sql`${users.balance} + ${amount}` }).where(eq(users.id, user.id));
+            await tx.update(users).set({ balance: newBalance, balanceTenths: newBalanceTenths }).where(eq(users.id, user.id));
 
             // Create transaction
             await tx.insert(transactions).values({
                 userId: user.id,
                 type: 'deposit',
                 amount,
+                amountTenths,
                 balanceBefore: currentBalance,
                 balanceAfter: newBalance,
+                balanceBeforeTenths: currentBalanceTenths,
+                balanceAfterTenths: newBalanceTenths,
                 status: 'completed',
                 description: `Duyệt nạp tiền thủ công bởi Admin (Đơn #${deposit.id})`,
                 reference: deposit.reference,
@@ -1152,20 +1161,27 @@ router.post('/transactions/deposit', async (req: AuthRequest, res) => {
             return res.status(404).json({ message: 'User not found' });
         }
 
-        const newBalance = user.balance + parseFloat(amount);
+        const parsedAmount = parseFloat(amount);
+        const amountTenths = toTenths(parsedAmount);
+        const currentBalanceTenths = storedBalanceTenths(user);
+        const newBalanceTenths = currentBalanceTenths + amountTenths;
+        const newBalance = fromTenths(newBalanceTenths);
 
         // Update balance
         await db.update(users)
-            .set({ balance: newBalance })
+            .set({ balance: newBalance, balanceTenths: newBalanceTenths })
             .where(eq(users.id, user.id));
 
         // Create transaction
         const [transaction] = await db.insert(transactions).values({
             userId: user.id,
             type: 'deposit',
-            amount: parseFloat(amount),
-            balanceBefore: user.balance,
+            amount: parsedAmount,
+            amountTenths,
+            balanceBefore: fromTenths(currentBalanceTenths),
             balanceAfter: newBalance,
+            balanceBeforeTenths: currentBalanceTenths,
+            balanceAfterTenths: newBalanceTenths,
             status: 'completed',
             description: description || 'Nạp tiền thủ công bởi Admin',
         }).returning();
@@ -1411,7 +1427,7 @@ router.get('/users', async (req, res) => {
             name: u.name,
             email: u.email,
             role: u.role,
-            balance: u.balance,
+            balance: fromTenths(storedBalanceTenths(u)),
             createdAt: u.createdAt,
         }));
 
@@ -1461,7 +1477,7 @@ router.get('/users/:id', async (req, res) => {
             name: user.name,
             email: user.email,
             role: user.role,
-            balance: user.balance,
+            balance: fromTenths(storedBalanceTenths(user)),
             createdAt: user.createdAt,
         });
     } catch (error) {
@@ -1542,15 +1558,22 @@ router.put('/users/:id', async (req: AuthRequest, res) => {
         // Add to balance instead of overwriting
         if (addBalance !== undefined && addBalance !== 0) {
             const amount = parseFloat(addBalance);
-            updateData.balance = currentUser.balance + amount;
+            const amountTenths = toTenths(amount);
+            const currentBalanceTenths = storedBalanceTenths(currentUser);
+            const newBalanceTenths = currentBalanceTenths + amountTenths;
+            updateData.balance = fromTenths(newBalanceTenths);
+            updateData.balanceTenths = newBalanceTenths;
 
             // Create transaction record for the balance change
             await db.insert(transactions).values({
                 userId: userId,
                 type: amount > 0 ? 'deposit' : 'purchase',
                 amount: Math.abs(amount),
-                balanceBefore: currentUser.balance,
-                balanceAfter: currentUser.balance + amount,
+                amountTenths: Math.abs(amountTenths),
+                balanceBefore: fromTenths(currentBalanceTenths),
+                balanceAfter: fromTenths(newBalanceTenths),
+                balanceBeforeTenths: currentBalanceTenths,
+                balanceAfterTenths: newBalanceTenths,
                 status: 'completed',
                 description: amount > 0 ? 'Admin cộng số dư' : 'Admin trừ số dư',
             });

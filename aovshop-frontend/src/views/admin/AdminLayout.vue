@@ -2,7 +2,14 @@
   <div class="admin-layout">
     <!-- Mobile Header -->
     <header class="mobile-header">
-      <button class="hamburger-btn" @click="toggleSidebar">
+      <button
+        class="hamburger-btn"
+        type="button"
+        aria-label="Mở menu quản trị"
+        :aria-expanded="isSidebarOpen"
+        aria-controls="admin-sidebar"
+        @click="toggleSidebar"
+      >
         <span></span>
         <span></span>
         <span></span>
@@ -15,14 +22,15 @@
     <div 
       class="sidebar-overlay" 
       :class="{ active: isSidebarOpen }" 
+      aria-hidden="true"
       @click="closeSidebar"
     ></div>
 
-    <aside class="admin-sidebar" :class="{ open: isSidebarOpen }">
+    <aside id="admin-sidebar" class="admin-sidebar" :class="{ open: isSidebarOpen }">
       <div class="sidebar-header">
         <router-link to="/" class="logo">{{ settingsStore.shopName }}</router-link>
         <span class="badge badge-primary">Admin</span>
-        <button class="close-sidebar-btn" @click="closeSidebar">✕</button>
+        <button class="close-sidebar-btn" type="button" aria-label="Đóng menu quản trị" @click="closeSidebar">✕</button>
       </div>
       
       <nav class="sidebar-nav">
@@ -85,7 +93,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useThemeStore } from '../../stores/theme'
 import { useSettingsStore } from '../../stores/settings'
 import { usePush } from '../../composables/usePush'
@@ -95,16 +103,24 @@ const settingsStore = useSettingsStore()
 const push = usePush()
 const isSidebarOpen = ref(false)
 
-import { onMounted, onUnmounted } from 'vue'
+const handleKeydown = (event) => {
+  if (event.key === 'Escape') closeSidebar()
+}
 
 onMounted(async () => {
   document.body.classList.add('admin-mode')
+  window.addEventListener('keydown', handleKeydown)
   await push.registerServiceWorker()
   await push.checkSubscription()
 })
 
 onUnmounted(() => {
-  document.body.classList.remove('admin-mode')
+  document.body.classList.remove('admin-mode', 'admin-sidebar-open')
+  window.removeEventListener('keydown', handleKeydown)
+})
+
+watch(isSidebarOpen, (open) => {
+  document.body.classList.toggle('admin-sidebar-open', open)
 })
 
 const toggleSidebar = () => {
@@ -225,6 +241,7 @@ const toggleNotifications = async () => {
   align-items: center;
   gap: 1rem;
   z-index: 1000;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08);
 }
 
 /* Hamburger Button */
@@ -293,8 +310,26 @@ const toggleNotifications = async () => {
 
 /* Mobile Responsive */
 @media (max-width: 768px) {
+  :global(body.admin-mode) {
+    overflow-x: hidden;
+  }
+
+  :global(body.admin-mode.admin-sidebar-open) {
+    overflow: hidden;
+  }
+
   .mobile-header {
     display: flex;
+    padding-top: env(safe-area-inset-top);
+    height: calc(60px + env(safe-area-inset-top));
+  }
+
+  .mobile-header .logo {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .admin-sidebar {
@@ -304,15 +339,25 @@ const toggleNotifications = async () => {
     width: 280px;
     max-width: 85vw;
     z-index: 1001;
-    transition: left 0.3s ease;
+    left: 0;
+    transform: translateX(-105%);
+    transition: transform 0.25s ease;
+    padding-bottom: env(safe-area-inset-bottom);
+    box-shadow: 18px 0 48px rgba(0, 0, 0, 0.25);
   }
 
   .admin-sidebar.open {
-    left: 0;
+    transform: translateX(0);
   }
 
   .admin-sidebar .sidebar-header {
-    padding-top: 1rem;
+    padding-top: calc(1rem + env(safe-area-inset-top));
+  }
+
+  .nav-item {
+    min-height: 46px;
+    display: flex;
+    align-items: center;
   }
 
   .close-sidebar-btn {
@@ -332,11 +377,121 @@ const toggleNotifications = async () => {
 
   .admin-main {
     margin-left: 0;
-    padding: 1rem;
-    padding-top: 80px;
+    padding: calc(72px + env(safe-area-inset-top)) 0.75rem calc(1.5rem + env(safe-area-inset-bottom));
     min-width: 0;
     width: 100%;
     overflow-x: hidden;
+  }
+
+  :global(.admin-main > *) {
+    width: 100%;
+    min-width: 0;
+  }
+
+  :global(.admin-main .page-header) {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+
+  :global(.admin-main .page-header h1),
+  :global(.admin-main .dashboard > h1) {
+    font-size: clamp(1.35rem, 6vw, 1.65rem);
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  :global(.admin-main .page-header > .btn),
+  :global(.admin-main .page-header > button) {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  :global(.admin-main .filters),
+  :global(.admin-main .filter-group) {
+    width: 100%;
+    min-width: 0;
+    gap: 0.625rem;
+  }
+
+  :global(.admin-main .filters .form-input),
+  :global(.admin-main .filter-group .form-input) {
+    width: 100% !important;
+    min-width: 0;
+    min-height: 44px;
+  }
+
+  :global(.admin-main .table tbody tr) {
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  }
+
+  :global(.admin-main .table td:last-child .btn),
+  :global(.admin-main .account-actions .btn) {
+    min-height: 40px;
+  }
+
+  :global(.admin-main .modal-overlay) {
+    align-items: flex-end !important;
+    padding: 0 !important;
+    z-index: 1100;
+  }
+
+  :global(.admin-main .modal),
+  :global(.admin-main .modal-card) {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 92dvh;
+    margin: 0 !important;
+    border-radius: 18px 18px 0 0 !important;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  :global(.admin-main .modal-header) {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 1rem;
+    background: var(--bg-secondary);
+  }
+
+  :global(.admin-main .modal-body) {
+    padding: 1rem;
+  }
+
+  :global(.admin-main .modal-footer),
+  :global(.admin-main .modal-actions) {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+    padding: 0.875rem 1rem calc(0.875rem + env(safe-area-inset-bottom));
+    background: var(--bg-secondary);
+    border-top: 1px solid var(--border);
+  }
+
+  :global(.admin-main .modal-footer .btn),
+  :global(.admin-main .modal-actions .btn) {
+    flex: 1;
+    min-height: 44px;
+  }
+}
+
+@media (max-width: 380px) {
+  .mobile-header {
+    gap: 0.625rem;
+    padding-left: 0.625rem;
+    padding-right: 0.625rem;
+  }
+
+  .mobile-header .badge {
+    font-size: 0.7rem;
+  }
+
+  .admin-main {
+    padding-left: 0.625rem;
+    padding-right: 0.625rem;
   }
 }
 

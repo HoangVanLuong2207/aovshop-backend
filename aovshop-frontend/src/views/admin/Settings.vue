@@ -289,6 +289,7 @@
             type="number"
             class="form-input"
             min="1"
+            max="1000000000"
             step="1"
             required
           />
@@ -336,6 +337,7 @@
               <option value="TPB">TPBank</option>
               <option value="BIDV">BIDV</option>
               <option value="VIB">VIB</option>
+              <option value="KLB">KienLongBank</option>
             </select>
           </div>
           <div class="form-group">
@@ -1145,5 +1147,102 @@ small {
 
 .btn-block {
   width: 100%;
+}
+
+@media (max-width: 768px) {
+  .settings-page {
+    padding: 0;
+  }
+
+  .settings-grid {
+    gap: 0;
+  }
+
+  .settings-section {
+    padding: 1rem;
+    margin-bottom: 0.75rem;
+    border-radius: 14px;
+  }
+
+  .settings-section h2 {
+    margin-bottom: 1rem;
+    font-size: 1.1rem;
+    line-height: 1.35;
+  }
+
+  .settings-form {
+    max-width: none;
+  }
+
+  .form-input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .form-actions .btn {
+    width: 100%;
+    min-height: 44px;
+  }
+
+  .preview-images,
+  .banner-preview-grid {
+    gap: 0.75rem;
+  }
+
+  .preview-item,
+  .preview-logo,
+  .preview-banner {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .editor-toolbar {
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .account-card {
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  .account-info {
+    min-width: 0;
+  }
+
+  .account-number {
+    overflow-wrap: anywhere;
+  }
+
+  .account-actions {
+    width: 100%;
+  }
+
+  .account-actions .btn {
+    flex: 1;
+  }
+
+  .modal-card {
+    padding: 1rem;
+  }
+
+  .modal-card h3 {
+    font-size: 1.1rem;
+  }
+
+  .modal-actions {
+    margin: 1rem -1rem -1rem;
+  }
+}
+
+@media (max-width: 420px) {
+  .account-card {
+    flex-direction: column;
+  }
+
+  .banner-item {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 </style>

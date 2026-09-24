@@ -40,7 +40,8 @@ api.interceptors.response.use(
       if (currentPath !== '/login' && currentPath !== '/register') {
         storage.remove('token')
         storage.remove('user')
-        window.location.href = '/login'
+        const redirect = window.location.pathname + window.location.search
+        window.location.href = `/login?redirect=${encodeURIComponent(redirect)}`
       }
     }
     return Promise.reject(error)
@@ -63,6 +64,12 @@ export const authApi = {
   resendVerification: (email) => api.post('/auth/resend-verification', { email }),
   forgotPassword: (email) => api.post('/auth/forgot-password', { email }),
   resetPassword: (data) => api.post('/auth/reset-password', data),
+}
+
+// Checkpass SSO and entitlement API
+export const checkpassApi = {
+  createSsoTicket: (returnUrl) => api.post('/checkpass/sso/ticket', { return_url: returnUrl }),
+  getStatus: () => api.get('/checkpass/status'),
 }
 
 // Shop API

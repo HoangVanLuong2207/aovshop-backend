@@ -145,7 +145,7 @@
                   </div>
 
                   <div class="info-section">
-                    <div class="info-row">
+                    <div class="info-row static-row">
                       <span>Ngân hàng:</span>
                       <strong>{{ paymentInfo.bank_name || (paymentInfo.bank && paymentInfo.bank.bankName) }}</strong>
                     </div>
@@ -154,25 +154,26 @@
                       <strong>{{ paymentInfo.account_number || (paymentInfo.bank && paymentInfo.bank.accountNumber) }}</strong>
                       <button class="btn-copy" @click="copy(paymentInfo.account_number || (paymentInfo.bank && paymentInfo.bank.accountNumber))">📋</button>
                     </div>
-                    <div class="info-row">
+                    <div class="info-row static-row">
                       <span>Chủ TK:</span>
                       <strong>{{ paymentInfo.account_name || (paymentInfo.bank && paymentInfo.bank.accountName) }}</strong>
                     </div>
-                    <div class="info-row highlight">
+                    <div class="info-row highlight amount-row">
                       <span>Số tiền:</span>
                       <strong class="text-success">{{ formatPrice(paymentInfo.amount) }}</strong>
-                      <button class="btn-copy" @click="copy(paymentInfo.amount)">📋</button>
+                      <button class="btn-copy" type="button" title="Sao chép số tiền" aria-label="Sao chép số tiền" @click="copy(paymentInfo.amount)">📋</button>
                     </div>
-                    <div class="info-row highlight">
+                    <div class="info-row highlight transfer-row">
                       <span>Nội dung:</span>
-                      <strong>{{ paymentInfo.reference || paymentInfo.content }}</strong>
-                      <button class="btn-copy" @click="copy(paymentInfo.reference || paymentInfo.content)">📋</button>
+                      <strong class="transfer-code">{{ paymentInfo.reference || paymentInfo.content }}</strong>
+                      <button class="btn-copy" type="button" title="Sao chép nội dung" aria-label="Sao chép nội dung" @click="copy(paymentInfo.reference || paymentInfo.content)">📋</button>
                     </div>
                   </div>
                 </div>
 
                 <div class="important-note compact">
-                  ⚠️ Chuyển <strong>{{ formatPrice(paymentInfo.amount) }}</strong> với nội dung <strong>{{ paymentInfo.content }}</strong>.
+                  <span>⚠️ Chuyển <strong>{{ formatPrice(paymentInfo.amount) }}</strong> với nội dung</span>
+                  <strong class="note-reference">{{ paymentInfo.reference || paymentInfo.content }}</strong>
                 </div>
 
                 <div class="polling-status" v-if="pollInterval">
@@ -283,7 +284,9 @@ const availableQuickAmounts = computed(() => {
 const formatPrice = (price) => {
   return new Intl.NumberFormat('vi-VN', {
     style: 'currency',
-    currency: 'VND'
+    currency: 'VND',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1
   }).format(price || 0)
 }
 
@@ -792,10 +795,11 @@ onUnmounted(() => {
 }
 
 .payment-modal {
-  max-width: 500px;
+  max-width: 640px;
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
+  overflow-x: hidden;
   background: var(--bg-secondary);
 }
 
@@ -829,7 +833,8 @@ onUnmounted(() => {
 }
 
 .modal-grid {
-  display: flex;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
   gap: 1.5rem;
   align-items: flex-start;
 }
@@ -841,6 +846,11 @@ onUnmounted(() => {
 .modal-grid .qr-code {
   width: 180px;
   height: auto;
+}
+
+.modal-grid .info-section {
+  min-width: 0;
+  width: 100%;
 }
 
 .payment-details-grid {
@@ -891,11 +901,49 @@ onUnmounted(() => {
 }
 
 .info-section .info-row {
+  display: grid;
+  grid-template-columns: minmax(78px, 100px) minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 0.5rem;
   padding: 0.4rem 0;
   font-size: 0.9rem;
 }
 
+.info-section .info-row > span {
+  white-space: nowrap;
+}
+
+.info-section .info-row > strong {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.info-section .info-row.static-row > strong {
+  grid-column: 2 / 4;
+}
+
+.transfer-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.35;
+  word-break: break-all;
+}
+
+.payment-modal .btn-copy {
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: rgba(var(--primary-rgb), 0.12);
+}
+
 .important-note.compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem;
   margin-top: 1rem;
   padding: 0.75rem;
   font-size: 0.85rem;
@@ -904,10 +952,22 @@ onUnmounted(() => {
   border-left: 3px solid #f59e0b;
 }
 
+.note-reference {
+  display: block;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
 @media (max-width: 600px) {
   .modal-grid {
-    flex-direction: column;
+    grid-template-columns: 1fr;
     align-items: center;
+  }
+
+  .modal-grid .qr-section {
+    justify-self: center;
   }
 }
 
@@ -1128,6 +1188,7 @@ onUnmounted(() => {
   .info-section .info-row {
     font-size: 0.8rem;
     padding: 0.3rem 0;
+    grid-template-columns: 72px minmax(0, 1fr) 30px;
   }
 
   .important-note.compact {

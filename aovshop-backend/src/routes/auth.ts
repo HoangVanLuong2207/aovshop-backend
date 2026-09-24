@@ -11,6 +11,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
 import { TelegramService } from '../services/telegram.js';
 import { ENV_ADMIN_ID, getEnvAdminCredentials, getEnvAdminProfile, normalizeEmail } from '../config/systemAdmin.js';
+import { fromTenths, storedBalanceTenths } from '../services/money.js';
 
 const router = Router();
 const googleClient = new OAuth2Client();
@@ -26,7 +27,7 @@ const publicUser = (user: typeof users.$inferSelect) => ({
     name: user.name,
     email: user.email,
     role: user.role,
-    balance: user.balance,
+    balance: fromTenths(storedBalanceTenths(user)),
     emailVerified: user.emailVerified,
 });
 
@@ -76,6 +77,7 @@ router.post('/register', async (req, res) => {
             password: hashedPassword,
             role: 'user',
             balance: 0,
+            balanceTenths: 0,
             emailVerified: false,
             verificationToken,
             verificationExpires,
@@ -107,7 +109,7 @@ router.post('/register', async (req, res) => {
 
         res.json({
             message: 'Đăng ký thành công! Bạn có thể sử dụng shop ngay, nhưng nên xác thực email để bảo mật tài khoản.',
-            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: user.balance, emailVerified: user.emailVerified },
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: fromTenths(storedBalanceTenths(user)), emailVerified: user.emailVerified },
             token,
         });
     } catch (error) {
@@ -167,7 +169,7 @@ router.post('/login', async (req, res) => {
 
         res.json({
             message: 'Đăng nhập thành công',
-            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: user.balance, emailVerified: user.emailVerified },
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: fromTenths(storedBalanceTenths(user)), emailVerified: user.emailVerified },
             token,
         });
     } catch (error) {
@@ -234,6 +236,7 @@ router.post('/google', async (req, res) => {
                     googleId,
                     role: 'user',
                     balance: 0,
+                    balanceTenths: 0,
                     emailVerified: true,
                 }).returning();
                 user = result[0];
@@ -281,7 +284,7 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
                 name: user.name,
                 email: user.email,
                 role: user.role,
-                balance: user.balance,
+                balance: fromTenths(storedBalanceTenths(user)),
                 emailVerified: user.emailVerified
             }
         });
@@ -367,7 +370,7 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
 
         res.json({
             message,
-            user: { id: user!.id, name: user!.name, email: user!.email, role: user!.role, balance: user!.balance, emailVerified: user!.emailVerified },
+            user: { id: user!.id, name: user!.name, email: user!.email, role: user!.role, balance: fromTenths(storedBalanceTenths(user!)), emailVerified: user!.emailVerified },
         });
     } catch (error) {
         console.error(error);

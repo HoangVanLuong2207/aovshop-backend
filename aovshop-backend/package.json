@@ -13,7 +13,8 @@
         "db:migrate-minimum-order-quantity": "tsx src/db/migrate-minimum-order-quantity.ts",
         "db:migrate-google-auth": "tsx src/db/migrate-google-auth.ts",
         "test": "npm run build && node tests/run-security.mjs",
-        "db:migrate-security": "tsx src/db/migrate-security.ts"
+        "db:migrate-security": "tsx src/db/migrate-security.ts",
+        "db:migrate-checkpass": "tsx src/db/migrate-checkpass.ts"
     },
     "dependencies": {
         "@libsql/client": "^0.14.0",
