@@ -12,6 +12,8 @@ import adminRoutes from './routes/admin.js';
 import telegramRoutes from './routes/telegram.js';
 import { checkpassIntegrationRouter, userCheckpassRouter } from './routes/checkpass.js';
 import { TelegramService } from './services/telegram.js';
+import { client } from './db/index.js';
+import { migrateCheckpass } from './db/checkpassMigration.js';
 import cookieParser from 'cookie-parser';
 import { analyticsMiddleware } from './middleware/analytics.js';
 
@@ -182,6 +184,15 @@ app.listen(PORT, async () => {
     if (expiredCount > 0) {
         console.log(`✅ Startup cleanup: ${expiredCount} expired deposit(s) processed`);
     }
+
+    // Ensure Checkpass billing tables and columns exist
+    try {
+        await migrateCheckpass(client);
+        console.log('✅ Checkpass migration verified');
+    } catch (err) {
+        console.error('⚠️ Checkpass migration warning:', err);
+    }
+
     await TelegramService.setupWebhook();
     TelegramService.startDailyReportScheduler();
 });
