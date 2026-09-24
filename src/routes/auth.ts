@@ -10,7 +10,8 @@ import { eq, and, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
 import { TelegramService } from '../services/telegram.js';
-import { ENV_ADMIN_ID, getEnvAdminCredentials, getSpecialAdminProfile, normalizeEmail, systemAdmin } from '../config/systemAdmin.js';
+import { ENV_ADMIN_ID, getEnvAdminCredentials, getEnvAdminProfile, normalizeEmail } from '../config/systemAdmin.js';
+import { fromTenths, storedBalanceTenths } from '../services/money.js';
 
 const router = Router();
 const googleClient = new OAuth2Client();
@@ -26,7 +27,7 @@ const publicUser = (user: typeof users.$inferSelect) => ({
     name: user.name,
     email: user.email,
     role: user.role,
-    balance: user.balance,
+    balance: fromTenths(storedBalanceTenths(user)),
     emailVerified: user.emailVerified,
 });
 
@@ -76,6 +77,7 @@ router.post('/register', async (req, res) => {
             password: hashedPassword,
             role: 'user',
             balance: 0,
+            balanceTenths: 0,
             emailVerified: false,
             verificationToken,
             verificationExpires,
@@ -107,7 +109,7 @@ router.post('/register', async (req, res) => {
 
         res.json({
             message: 'Đăng ký thành công! Bạn có thể sử dụng shop ngay, nhưng nên xác thực email để bảo mật tài khoản.',
-            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: user.balance, emailVerified: user.emailVerified },
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: fromTenths(storedBalanceTenths(user)), emailVerified: user.emailVerified },
             token,
         });
     } catch (error) {
@@ -126,17 +128,6 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ message: 'Email và mật khẩu không hợp lệ' });
         }
 
-        // Emergency administrator: intentionally outside the database.
-        // The password is verified against a bcrypt hash, never as plaintext.
-        if (normalizedEmail === systemAdmin.email.toLowerCase() && await bcrypt.compare(password, systemAdmin.passwordHash)) {
-            const token = jwt.sign({ userId: systemAdmin.id, role: 'admin' }, process.env.JWT_SECRET!, { expiresIn: '7d' });
-            return res.json({
-                message: 'Đăng nhập thành công (Admin)',
-                user: getSpecialAdminProfile(systemAdmin.id),
-                token,
-            });
-        }
-
         // Admin login from ENV (not stored in DB)
         const envAdmin = getEnvAdminCredentials();
 
@@ -145,7 +136,7 @@ router.post('/login', async (req, res) => {
 
             return res.json({
                 message: 'Đăng nhập thành công (Admin)',
-                user: getSpecialAdminProfile(ENV_ADMIN_ID),
+                user: getEnvAdminProfile(ENV_ADMIN_ID),
                 token,
             });
         }
@@ -178,7 +169,7 @@ router.post('/login', async (req, res) => {
 
         res.json({
             message: 'Đăng nhập thành công',
-            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: user.balance, emailVerified: user.emailVerified },
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: fromTenths(storedBalanceTenths(user)), emailVerified: user.emailVerified },
             token,
         });
     } catch (error) {
@@ -245,6 +236,7 @@ router.post('/google', async (req, res) => {
                     googleId,
                     role: 'user',
                     balance: 0,
+                    balanceTenths: 0,
                     emailVerified: true,
                 }).returning();
                 user = result[0];
@@ -273,9 +265,9 @@ router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
 // Get profile
 router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
     try {
-        const specialAdmin = getSpecialAdminProfile(req.user!.id);
-        if (specialAdmin) {
-            return res.json({ user: specialAdmin });
+        const envAdmin = getEnvAdminProfile(req.user!.id);
+        if (envAdmin) {
+            return res.json({ user: envAdmin });
         }
 
         const user = await db.query.users.findFirst({
@@ -292,7 +284,7 @@ router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
                 name: user.name,
                 email: user.email,
                 role: user.role,
-                balance: user.balance,
+                balance: fromTenths(storedBalanceTenths(user)),
                 emailVerified: user.emailVerified
             }
         });
@@ -308,7 +300,7 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
         const { name, email } = req.body;
         const userId = req.user!.id;
 
-        if (getSpecialAdminProfile(userId)) {
+        if (getEnvAdminProfile(userId)) {
             return res.status(403).json({ message: 'Không thể sửa tài khoản admin hệ thống' });
         }
 
@@ -378,7 +370,7 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
 
         res.json({
             message,
-            user: { id: user!.id, name: user!.name, email: user!.email, role: user!.role, balance: user!.balance, emailVerified: user!.emailVerified },
+            user: { id: user!.id, name: user!.name, email: user!.email, role: user!.role, balance: fromTenths(storedBalanceTenths(user!)), emailVerified: user!.emailVerified },
         });
     } catch (error) {
         console.error(error);
@@ -394,7 +386,7 @@ router.put('/password', authMiddleware, async (req: AuthRequest, res) => {
             return res.status(400).json({ message: 'Mật khẩu mới cần ít nhất 8 ký tự và không quá 72 byte' });
         }
 
-        if (getSpecialAdminProfile(req.user!.id)) {
+        if (getEnvAdminProfile(req.user!.id)) {
             return res.status(403).json({ message: 'Không thể đổi mật khẩu admin hệ thống' });
         }
 

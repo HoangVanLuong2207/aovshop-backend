@@ -6,10 +6,12 @@ import { eq, and, lt, sql, inArray } from 'drizzle-orm';
 import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
+import { fromTenths, storedBalanceTenths, toTenths } from '../services/money.js';
 
 const router = Router();
 
 const DEFAULT_MINIMUM_DEPOSIT_AMOUNT = 10000;
+const MAXIMUM_DEPOSIT_AMOUNT = 1000000000;
 
 const getMinimumDepositAmount = async () => {
     const setting = await db.query.settings.findFirst({
@@ -17,7 +19,7 @@ const getMinimumDepositAmount = async () => {
     });
     const configuredAmount = Number(setting?.value);
 
-    return Number.isInteger(configuredAmount) && configuredAmount > 0
+    return Number.isSafeInteger(configuredAmount) && configuredAmount > 0 && configuredAmount <= MAXIMUM_DEPOSIT_AMOUNT
         ? configuredAmount
         : DEFAULT_MINIMUM_DEPOSIT_AMOUNT;
 };
@@ -107,7 +109,8 @@ router.get('/shop-info', async (req, res) => {
     }
 });
 
-// Public deposit constraints used by the deposit form.
+// Public constraint used by the deposit form. The create endpoint remains the
+// source of truth, so changing the setting takes effect without a deployment.
 router.get('/config', async (req, res) => {
     try {
         res.json({ minimum_deposit_amount: await getMinimumDepositAmount() });
@@ -122,7 +125,7 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { amount } = req.body;
         const minimumDepositAmount = await getMinimumDepositAmount();
-        if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount < minimumDepositAmount || amount > 1000000000) {
+        if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount < minimumDepositAmount || amount > MAXIMUM_DEPOSIT_AMOUNT) {
             const formattedMinimum = new Intl.NumberFormat('vi-VN').format(minimumDepositAmount);
             return res.status(400).json({
                 message: `Số tiền nạp tối thiểu là ${formattedMinimum}đ`,
@@ -225,23 +228,29 @@ router.post('/webhook', async (req, res) => {
             const legacy = await tx.query.transactions.findFirst({ where: eq(transactions.reference, String(transactionId)) });
             if (legacy) return { error: 'Event already processed' };
             const deposit = await tx.query.deposits.findFirst({ where: eq(deposits.id, pending.id) });
-            if (!deposit || deposit.status !== 'pending' || deposit.amount !== amount ||
-                deposit.bankId !== pending.bankId || !deposit.createdAt ||
-                Date.parse(deposit.createdAt) < Date.now() - 2 * 60 * 60 * 1000) {
+            // A bank transfer can arrive after the deposit's two-hour display window.
+            // An expired but unpaid reference is still unique and safe to settle once.
+            if (!deposit || !['pending', 'expired'].includes(deposit.status) || deposit.amount !== amount ||
+                deposit.bankId !== pending.bankId) {
                 return { error: 'Deposit is unavailable or amount does not match' };
             }
             const user = await tx.query.users.findFirst({ where: eq(users.id, userId) });
-            if (!user || !Number.isSafeInteger(user.balance + amount)) return { error: 'Invalid balance' };
+            if (!user) return { error: 'Invalid balance' };
+            const beforeTenths = storedBalanceTenths(user);
+            const amountTenths = toTenths(amount);
+            const afterTenths = beforeTenths + amountTenths;
+            if (!Number.isSafeInteger(afterTenths)) return { error: 'Invalid balance' };
             const claimed = await tx.update(deposits)
                 .set({ status: 'completed', transactionId: String(transactionId), updatedAt: new Date().toISOString() })
-                .where(and(eq(deposits.id, deposit.id), eq(deposits.status, 'pending')))
+                .where(and(eq(deposits.id, deposit.id), inArray(deposits.status, ['pending', 'expired'])))
                 .returning({ id: deposits.id });
             if (claimed.length !== 1) throw new Error('Deposit changed during processing');
             await tx.insert(paymentWebhookEvents).values({ id: eventId, depositId: deposit.id });
-            await tx.update(users).set({ balance: sql`${users.balance} + ${amount}` }).where(eq(users.id, userId));
+            await tx.update(users).set({ balance: fromTenths(afterTenths), balanceTenths: afterTenths }).where(eq(users.id, userId));
             await tx.insert(transactions).values({
-                userId, type: 'deposit', amount, balanceBefore: user.balance,
-                balanceAfter: user.balance + amount, status: 'completed',
+                userId, type: 'deposit', amount, amountTenths,
+                balanceBefore: fromTenths(beforeTenths), balanceBeforeTenths: beforeTenths,
+                balanceAfter: fromTenths(afterTenths), balanceAfterTenths: afterTenths, status: 'completed',
                 description: 'Nạp tiền tự động qua SePay', reference: String(transactionId),
             });
             return { success: true };
@@ -319,7 +328,7 @@ router.get('/history', authMiddleware, async (req: AuthRequest, res) => {
 router.get('/balance', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const user = await db.query.users.findFirst({ where: eq(users.id, req.user!.id) });
-        res.json({ balance: user?.balance || 0 });
+        res.json({ balance: user ? fromTenths(storedBalanceTenths(user)) : 0 });
     } catch (error) {
         res.status(500).json({ message: 'Error' });
     }

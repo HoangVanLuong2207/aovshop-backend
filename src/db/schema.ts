@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, real, index } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, real, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { relations } from 'drizzle-orm';
 
 // Users table
@@ -12,6 +12,9 @@ export const users = sqliteTable('users', {
     googleId: text('google_id').unique(),
     role: text('role', { enum: ['admin', 'user'] }).default('user').notNull(),
     balance: real('balance').default(0).notNull(),
+    // Canonical money value. One unit is 0.1 VND; `balance` remains a
+    // compatibility/display mirror while the application is migrated.
+    balanceTenths: integer('balance_tenths'),
     emailVerified: integer('email_verified', { mode: 'boolean' }).default(true).notNull(), // default true for existing users
     verificationToken: text('verification_token'),
     verificationExpires: text('verification_expires'),
@@ -48,7 +51,6 @@ export const products = sqliteTable('products', {
     preorderPlaceholder: text('preorder_placeholder'),
     dailyBuyLimit: integer('daily_buy_limit'), // NULL or 0 = no limit
     minimumOrderQuantity: integer('minimum_order_quantity'), // NULL or 0 = no minimum
-    // NULL/0: normal shop product. A positive value issues a Checkpass key for this many hours.
     // SQLite INTEGER affinity preserves fractional hours (e.g. 0.5); keep the existing column.
     checkpassHours: integer('checkpass_hours'),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
@@ -84,6 +86,12 @@ export const orders = sqliteTable('orders', {
     subtotal: real('subtotal').notNull(),
     discount: real('discount').default(0),
     total: real('total').notNull(),
+    subtotalTenths: integer('subtotal_tenths'),
+    discountTenths: integer('discount_tenths'),
+    totalTenths: integer('total_tenths'),
+    source: text('source').default('shop').notNull(),
+    externalReference: text('external_reference'),
+    metadata: text('metadata'),
     promoCode: text('promo_code'),
     note: text('note'),
     customerNote: text('customer_note'),
@@ -94,6 +102,7 @@ export const orders = sqliteTable('orders', {
 }, (table) => ({
     userIdIdx: index('idx_orders_user_id').on(table.userId),
     createdAtIdx: index('idx_orders_created_at').on(table.createdAt),
+    sourceReferenceIdx: uniqueIndex('idx_orders_source_reference').on(table.source, table.externalReference),
 }));
 
 // Order items table
@@ -105,6 +114,8 @@ export const orderItems = sqliteTable('order_items', {
     quantity: integer('quantity').notNull(),
     price: real('price').notNull(),
     total: real('total').notNull(),
+    priceTenths: integer('price_tenths'),
+    totalTenths: integer('total_tenths'),
 });
 
 // Transactions table
@@ -115,6 +126,9 @@ export const transactions = sqliteTable('transactions', {
     amount: real('amount').notNull(),
     balanceBefore: real('balance_before').notNull(),
     balanceAfter: real('balance_after').notNull(),
+    amountTenths: integer('amount_tenths'),
+    balanceBeforeTenths: integer('balance_before_tenths'),
+    balanceAfterTenths: integer('balance_after_tenths'),
     status: text('status', { enum: ['pending', 'completed', 'failed'] }).default('completed').notNull(),
     description: text('description'),
     reference: text('reference'),
@@ -166,6 +180,7 @@ export const productAccounts = sqliteTable('product_accounts', {
 }, (table) => ({
     productStatusIdx: index('idx_product_accounts_product_status').on(table.productId, table.status),
     orderIdIdx: index('idx_product_accounts_order_id').on(table.orderId),
+    dataIdx: index('idx_product_accounts_data').on(table.data),
 }));
 
 // Product images (gallery)
@@ -299,3 +314,72 @@ export const paymentWebhookEvents = sqliteTable('payment_webhook_events', {
     depositId: integer('deposit_id').references(() => deposits.id).notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
 });
+
+export const checkpassSsoTickets = sqliteTable('checkpass_sso_tickets', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    codeHash: text('code_hash').notNull().unique(),
+    userId: integer('user_id').references(() => users.id).notNull(),
+    audience: text('audience').default('checkpass').notNull(),
+    returnUrl: text('return_url').notNull(),
+    expiresAt: text('expires_at').notNull(),
+    consumedAt: text('consumed_at'),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+}, (table) => ({
+    userIdx: index('idx_checkpass_sso_user').on(table.userId),
+    expiryIdx: index('idx_checkpass_sso_expiry').on(table.expiresAt),
+}));
+
+export const balanceHolds = sqliteTable('balance_holds', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id').references(() => users.id).notNull(),
+    service: text('service').default('checkpass').notNull(),
+    externalReference: text('external_reference').notNull().unique(),
+    amountTenths: integer('amount_tenths').notNull(),
+    capturedAmountTenths: integer('captured_amount_tenths').default(0).notNull(),
+    status: text('status', { enum: ['active', 'captured', 'released', 'expired'] }).default('active').notNull(),
+    expiresAt: text('expires_at').notNull(),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
+}, (table) => ({
+    userStatusIdx: index('idx_balance_holds_user_status').on(table.userId, table.status),
+}));
+
+export const checkpassEntitlements = sqliteTable('checkpass_entitlements', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    userId: integer('user_id').references(() => users.id).notNull(),
+    blockCount: integer('block_count').notNull(),
+    durationMinutes: integer('duration_minutes').notNull(),
+    startsAt: text('starts_at').notNull(),
+    expiresAt: text('expires_at').notNull(),
+    orderId: integer('order_id').references(() => orders.id),
+    status: text('status', { enum: ['active', 'expired', 'cancelled'] }).default('active').notNull(),
+    source: text('source').default('checkpass').notNull(),
+    externalReference: text('external_reference').notNull().unique(),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+}, (table) => ({
+    userExpiryIdx: index('idx_checkpass_entitlements_user_expiry').on(table.userId, table.expiresAt),
+}));
+
+export const checkpassBillingOperations = sqliteTable('checkpass_billing_operations', {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    externalJobReference: text('external_job_reference').notNull().unique(),
+    userId: integer('user_id').references(() => users.id).notNull(),
+    billingMode: text('billing_mode', { enum: ['quantity', 'time'] }).notNull(),
+    submittedCount: integer('submitted_count').default(0).notNull(),
+    okCount: integer('ok_count').default(0).notNull(),
+    failCount: integer('fail_count').default(0).notNull(),
+    uncheckableCount: integer('uncheckable_count').default(0).notNull(),
+    unitPriceTenths: integer('unit_price_tenths').default(0).notNull(),
+    estimatedAmountTenths: integer('estimated_amount_tenths').default(0).notNull(),
+    finalAmountTenths: integer('final_amount_tenths').default(0).notNull(),
+    holdId: integer('hold_id').references(() => balanceHolds.id),
+    entitlementId: integer('entitlement_id').references(() => checkpassEntitlements.id),
+    orderId: integer('order_id').references(() => orders.id),
+    status: text('status', { enum: ['reserved', 'covered', 'settled', 'released', 'failed'] }).notNull(),
+    idempotencyKey: text('idempotency_key').notNull().unique(),
+    createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
+    settledAt: text('settled_at'),
+}, (table) => ({
+    userIdx: index('idx_checkpass_billing_user').on(table.userId),
+    statusIdx: index('idx_checkpass_billing_status').on(table.status),
+}));

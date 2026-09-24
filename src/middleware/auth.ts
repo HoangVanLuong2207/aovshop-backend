@@ -4,7 +4,7 @@ import { db } from '../db/index.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { getApiAuthToken } from '../services/tokenCache.js';
-import { ENV_ADMIN_ID, getSpecialAdminProfile, SYSTEM_ADMIN_ID } from '../config/systemAdmin.js';
+import { ENV_ADMIN_ID, getEnvAdminProfile } from '../config/systemAdmin.js';
 
 export interface AuthRequest extends Request {
     user?: {
@@ -39,15 +39,15 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
         // 2. Otherwise, verify as JWT
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number; role?: string; tokenVersion?: number };
 
-        // ENV and emergency administrators are not database users.
-        if (decoded.role === 'admin' && (decoded.userId === ENV_ADMIN_ID || decoded.userId === SYSTEM_ADMIN_ID)) {
-            const specialAdmin = getSpecialAdminProfile(decoded.userId);
-            if (!specialAdmin) {
+        // The optional ENV administrator is not a database user.
+        if (decoded.role === 'admin' && decoded.userId === ENV_ADMIN_ID) {
+            const envAdmin = getEnvAdminProfile(decoded.userId);
+            if (!envAdmin) {
                 return res.status(401).json({ message: 'Admin account is not configured' });
             }
             req.user = {
-                id: specialAdmin.id,
-                email: specialAdmin.email,
+                id: envAdmin.id,
+                email: envAdmin.email,
                 role: 'admin',
             };
             return next();

@@ -40,17 +40,6 @@ async function migrateFreshAndSeed() {
     console.log('');
     console.log('🌱 Seeding database...');
 
-    // Create admin user
-    const hashedAdminPassword = await bcrypt.hash('admin123', 10);
-    await db.insert(schema.users).values({
-        name: 'Admin',
-        email: 'admin@aovshop.com',
-        password: hashedAdminPassword,
-        role: 'admin',
-        balance: 0,
-    });
-    console.log('   ✓ Created admin user (admin@aovshop.com / admin123)');
-
     // Create demo user
     const hashedUserPassword = await bcrypt.hash('user123', 10);
     await db.insert(schema.users).values({
@@ -128,7 +117,6 @@ async function migrateFreshAndSeed() {
     console.log('✅ Database seeded successfully!');
     console.log('');
     console.log('📝 Login credentials:');
-    console.log('   Admin: admin@aovshop.com / admin123');
     console.log('   User:  user@demo.com / user123');
 }
 

@@ -9,6 +9,9 @@ import shopRoutes from './routes/shop.js';
 import ordersRoutes from './routes/orders.js';
 import depositRoutes, { cleanupExpiredDeposits } from './routes/deposit.js';
 import adminRoutes from './routes/admin.js';
+import telegramRoutes from './routes/telegram.js';
+import { checkpassIntegrationRouter, userCheckpassRouter } from './routes/checkpass.js';
+import { TelegramService } from './services/telegram.js';
 import cookieParser from 'cookie-parser';
 import { analyticsMiddleware } from './middleware/analytics.js';
 
@@ -24,6 +27,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+const isAuthenticatedCheckpassService = (req: express.Request) => {
+    const expected = process.env.CHECKPASS_SERVICE_TOKEN || '';
+    return Boolean(
+        expected && req.path.startsWith('/api/integrations/checkpass') &&
+        req.get('authorization') === `Bearer ${expected}`,
+    );
+};
+
 // Trust proxy for Render/Cloudflare/Proxies
 app.set('trust proxy', 1);
 
@@ -34,6 +45,7 @@ const generalLimiter = rateLimit({
     message: { message: 'Too many requests, please try again later.' },
     standardHeaders: true,
     legacyHeaders: false,
+    skip: isAuthenticatedCheckpassService,
 });
 
 // Rate limiting - Auth: 5 requests per minute per IP (stricter for login/register)
@@ -59,6 +71,16 @@ const ordersLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 20,
     message: { message: 'Too many order requests, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Master multiplexes all users through one server IP, so integration traffic
+// needs a service budget instead of the customer-facing 20 req/min cap.
+const checkpassServiceLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 10000,
+    message: { message: 'Checkpass service rate limit exceeded.' },
     standardHeaders: true,
     legacyHeaders: false,
 });
@@ -124,6 +146,8 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authLimiter, authRoutes); // 5 req/min - prevent brute force
 app.use('/api/shop', shopRoutes); // Uses general limit (100 req/min)
 app.use('/api/orders', ordersLimiter, ordersRoutes); // 20 req/min - prevent order spam
+app.use('/api/checkpass', ordersLimiter, userCheckpassRouter);
+app.use('/api/integrations/checkpass', checkpassServiceLimiter, checkpassIntegrationRouter);
 
 // Special handling for deposit: webhook needs its own limiter (or no limiter), while other routes need depositLimiter
 app.use('/api/deposit/webhook', webhookLimiter); // Apply specific webhook limiter
@@ -135,6 +159,7 @@ app.use('/api/deposit', (req, res, next) => {
     return depositLimiter(req, res, next);
 }, depositRoutes);
 app.use('/api/admin', adminLimiter, adminRoutes); // 50 req/min
+app.use('/api/telegram', telegramRoutes);
 
 // 404 handler
 app.use((req, res) => {
@@ -157,4 +182,6 @@ app.listen(PORT, async () => {
     if (expiredCount > 0) {
         console.log(`✅ Startup cleanup: ${expiredCount} expired deposit(s) processed`);
     }
+    await TelegramService.setupWebhook();
+    TelegramService.startDailyReportScheduler();
 });
