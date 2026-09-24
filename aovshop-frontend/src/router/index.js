@@ -124,13 +124,7 @@ router.beforeEach((to, from, next) => {
     } else if (to.meta.requiresAdmin && !authStore.isAdmin) {
         next({ name: 'home' })
     } else if (to.meta.guest && authStore.isAuthenticated) {
-        // Honor redirect query param (e.g. from Checkpass SSO flow)
-        const redirect = typeof to.query.redirect === 'string' ? to.query.redirect : ''
-        if (redirect.startsWith('/') && !redirect.startsWith('//')) {
-            next(redirect)
-        } else {
-            next({ name: 'home' })
-        }
+        next({ name: 'home' })
     } else {
         next()
     }
