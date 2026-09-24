@@ -123,12 +123,19 @@ userCheckpassRouter.post('/sso/ticket', authMiddleware, asyncRoute(async (req: A
     if (!parsed.success) return res.status(400).json({ message: 'Return URL không hợp lệ' });
     const target = allowedReturnUrl(parsed.data.return_url);
     if (!target) return res.status(400).json({ message: 'Return URL không được phép' });
+
+    let userId = req.user!.id;
+    if (userId <= 0 && req.user?.email) {
+        const u = await db.query.users.findFirst({ where: eq(users.email, req.user.email) });
+        if (u) userId = u.id;
+    }
+
     const code = crypto.randomBytes(32).toString('base64url');
     const now = new Date();
     await db.delete(checkpassSsoTickets).where(lt(checkpassSsoTickets.expiresAt, now.toISOString()));
     await db.insert(checkpassSsoTickets).values({
         codeHash: ticketHash(code),
-        userId: req.user!.id,
+        userId,
         audience: 'checkpass',
         returnUrl: target.toString(),
         expiresAt: new Date(now.getTime() + ticketLifetimeMs).toISOString(),

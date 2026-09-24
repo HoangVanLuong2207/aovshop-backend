@@ -39,15 +39,31 @@ export const authMiddleware = async (req: AuthRequest, res: Response, next: Next
         // 2. Otherwise, verify as JWT
         const decoded = jwt.verify(token, process.env.JWT_SECRET!) as { userId: number; role?: string; tokenVersion?: number };
 
-        // The optional ENV administrator is not a database user.
+        // The optional ENV administrator is linked to a database user record
+        // so relational features (orders, checkpass SSO, balances) have a valid user ID.
         if (decoded.role === 'admin' && decoded.userId === ENV_ADMIN_ID) {
             const envAdmin = getEnvAdminProfile(decoded.userId);
             if (!envAdmin) {
                 return res.status(401).json({ message: 'Admin account is not configured' });
             }
+            let dbUser = await db.query.users.findFirst({
+                where: eq(users.email, envAdmin.email),
+            });
+            if (!dbUser) {
+                const inserted = await db.insert(users).values({
+                    name: envAdmin.name || 'Admin',
+                    email: envAdmin.email,
+                    password: '',
+                    role: 'admin',
+                    balance: 0,
+                    balanceTenths: 0,
+                    emailVerified: true,
+                }).returning();
+                dbUser = inserted[0];
+            }
             req.user = {
-                id: envAdmin.id,
-                email: envAdmin.email,
+                id: dbUser.id,
+                email: dbUser.email,
                 role: 'admin',
             };
             return next();

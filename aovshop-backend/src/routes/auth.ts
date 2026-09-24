@@ -128,15 +128,45 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ message: 'Email và mật khẩu không hợp lệ' });
         }
 
-        // Admin login from ENV (not stored in DB)
+        // Admin login from ENV
         const envAdmin = getEnvAdminCredentials();
 
         if (envAdmin && normalizedEmail === envAdmin.email && password === envAdmin.password) {
-            const token = jwt.sign({ userId: ENV_ADMIN_ID, role: 'admin' }, process.env.JWT_SECRET!, { expiresIn: '7d' });
+            let dbUser = await db.query.users.findFirst({
+                where: eq(users.email, envAdmin.email),
+            });
+            if (!dbUser) {
+                const inserted = await db.insert(users).values({
+                    name: 'Admin',
+                    email: envAdmin.email,
+                    password: await bcrypt.hash(password, 10),
+                    role: 'admin',
+                    balance: 0,
+                    balanceTenths: 0,
+                    emailVerified: true,
+                }).returning();
+                dbUser = inserted[0];
+            } else if (dbUser.role !== 'admin') {
+                await db.update(users).set({ role: 'admin' }).where(eq(users.id, dbUser.id));
+                dbUser.role = 'admin';
+            }
+
+            const token = jwt.sign(
+                { userId: dbUser.id, role: 'admin', tokenVersion: dbUser.tokenVersion },
+                process.env.JWT_SECRET!,
+                { expiresIn: '7d' }
+            );
 
             return res.json({
                 message: 'Đăng nhập thành công (Admin)',
-                user: getEnvAdminProfile(ENV_ADMIN_ID),
+                user: {
+                    id: dbUser.id,
+                    name: dbUser.name,
+                    email: dbUser.email,
+                    role: 'admin',
+                    balance: fromTenths(storedBalanceTenths(dbUser)),
+                    emailVerified: true,
+                },
                 token,
             });
         }
