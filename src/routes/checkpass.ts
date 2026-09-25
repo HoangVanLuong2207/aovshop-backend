@@ -1,6 +1,6 @@
-import crypto, { timingSafeEqual } from 'node:crypto';
+import crypto, { timingSafeEqual, randomBytes } from 'node:crypto';
 import { Router, type NextFunction, type Request, type Response } from 'express';
-import { and, desc, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, lt, sql, inArray } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/index.js';
 import {
@@ -8,8 +8,11 @@ import {
     checkpassBillingOperations,
     checkpassEntitlements,
     checkpassSsoTickets,
+    deposits,
     orderItems,
     orders,
+    paymentAccounts,
+    settings,
     transactions,
     users,
 } from '../db/schema.js';
@@ -573,5 +576,113 @@ checkpassIntegrationRouter.get('/operations/:reference', asyncRoute(async (req, 
         order_id: operation.orderId,
         final_amount: fromTenths(operation.finalAmountTenths),
         entitlement_id: operation.entitlementId,
+    });
+}));
+
+// --- In-Checkpass Direct Deposit Endpoints ---
+const DEFAULT_MIN_DEPOSIT = 10000;
+const MAX_DEPOSIT = 1000000000;
+
+async function fetchMinDeposit(): Promise<number> {
+    const s = await db.query.settings.findFirst({ where: eq(settings.key, 'minimum_deposit_amount') });
+    const n = Number(s?.value);
+    return Number.isSafeInteger(n) && n > 0 && n <= MAX_DEPOSIT ? n : DEFAULT_MIN_DEPOSIT;
+}
+
+checkpassIntegrationRouter.get('/deposit/config', asyncRoute(async (req, res) => {
+    const min = await fetchMinDeposit();
+    res.json({ ok: true, minimum_deposit_amount: min });
+}));
+
+checkpassIntegrationRouter.post('/deposit/create', asyncRoute(async (req, res) => {
+    const parsed = z.object({
+        user_id: z.number().int().positive(),
+        amount: z.number().int().positive(),
+    }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ ok: false, error: 'Dữ liệu nạp tiền không hợp lệ' });
+
+    const { user_id: userId, amount } = parsed.data;
+    const min = await fetchMinDeposit();
+    if (amount < min || amount > MAX_DEPOSIT) {
+        return res.status(400).json({
+            ok: false,
+            error: `Số tiền nạp tối thiểu là ${new Intl.NumberFormat('vi-VN').format(min)}đ`,
+            minimum_deposit_amount: min,
+        });
+    }
+
+    const user = await db.query.users.findFirst({ where: eq(users.id, userId) });
+    if (!user) return res.status(404).json({ ok: false, error: 'User không tồn tại' });
+
+    const allActiveBanks = await db.query.paymentAccounts.findMany({
+        where: eq(paymentAccounts.isActive, true),
+    });
+    if (allActiveBanks.length === 0) {
+        return res.status(503).json({ ok: false, error: 'Hiện không có cổng ngân hàng nào hoạt động' });
+    }
+
+    const bankIds = allActiveBanks.map(b => b.id);
+    const countRows = await db.select({
+        bankId: deposits.bankId,
+        count: sql<number>`count(*)`,
+    })
+        .from(deposits)
+        .where(and(
+            inArray(deposits.bankId, bankIds),
+            eq(deposits.status, 'completed'),
+            sql`strftime('%m', ${deposits.createdAt}) = strftime('%m', 'now')`,
+            sql`strftime('%Y', ${deposits.createdAt}) = strftime('%Y', 'now')`
+        ))
+        .groupBy(deposits.bankId);
+
+    const countsMap = new Map<number, number>(countRows.map(r => [r.bankId as number, r.count || 0]));
+
+    const sortedBanks = [...allActiveBanks].map(b => {
+        const c = countsMap.get(b.id) || 0;
+        return { ...b, count: c, cycle: Math.floor(c / 50) };
+    }).sort((a, b) => a.cycle !== b.cycle ? a.cycle - b.cycle : a.count - b.count);
+
+    const selectedBank = sortedBanks[0];
+    const now = new Date();
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const timestamp = `${pad(now.getDate())}${pad(now.getMonth() + 1)}${now.getFullYear().toString().slice(-2)}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    const reference = `NAP${timestamp}${randomBytes(8).toString('hex')}U${userId}`;
+
+    const [newDep] = await db.insert(deposits).values({
+        userId,
+        amount,
+        reference,
+        bankId: selectedBank.id,
+        status: 'pending',
+    }).returning();
+
+    const qrUrl = `https://img.vietqr.io/image/${selectedBank.bankName}-${selectedBank.accountNumber}-compact2.png?amount=${amount}&addInfo=${reference}&accountName=${encodeURIComponent(selectedBank.accountName)}`;
+
+    res.json({
+        ok: true,
+        deposit_id: newDep.id,
+        reference,
+        amount,
+        bank_name: selectedBank.bankName,
+        account_number: selectedBank.accountNumber,
+        account_name: selectedBank.accountName,
+        qr_url: qrUrl,
+    });
+}));
+
+checkpassIntegrationRouter.get('/deposit/status/:reference', asyncRoute(async (req, res) => {
+    const reference = String(req.params.reference || '');
+    const dep = await db.query.deposits.findFirst({
+        where: eq(deposits.reference, reference),
+    });
+    if (!dep) return res.status(404).json({ ok: false, error: 'Đơn nạp không tồn tại' });
+    const userSnapshot = dep.status === 'completed' ? await accountSnapshot(db, dep.userId) : null;
+    res.json({
+        ok: true,
+        reference: dep.reference,
+        status: dep.status,
+        amount: dep.amount,
+        created_at: dep.createdAt,
+        user_snapshot: userSnapshot ? publicSnapshot(userSnapshot) : null,
     });
 }));
