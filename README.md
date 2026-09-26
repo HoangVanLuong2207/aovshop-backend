@@ -119,16 +119,5 @@ Quay lại Render → Backend → Environment Variables:
 
 ---
 
-## Tài khoản mặc định
-
-| Email | Password | Role |
-|-------|----------|------|
-| admin@example.com | password | Admin |
-| user@example.com | password | User |
-
-**⚠️ Đổi mật khẩu sau khi đăng nhập lần đầu!**
-
----
-
 ## Hỗ trợ
 Liên hệ: [Thông tin liên hệ của bạn]
