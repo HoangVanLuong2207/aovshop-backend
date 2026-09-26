@@ -10,13 +10,17 @@ import { eq, and, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { sendVerificationEmail, sendResetPasswordEmail, generateVerificationToken, getVerificationExpiry } from '../services/email.js';
 import { TelegramService } from '../services/telegram.js';
-import { ENV_ADMIN_ID, getEnvAdminCredentials, getEnvAdminProfile, normalizeEmail } from '../config/systemAdmin.js';
 import { fromTenths, storedBalanceTenths } from '../services/money.js';
 
 const router = Router();
 const googleClient = new OAuth2Client();
 const passwordSchema = z.string().min(8).refine(value => Buffer.byteLength(value, 'utf8') <= 72);
 const emailSchema = z.string().trim().toLowerCase().email().max(254);
+const normalizeEmail = (email: unknown): string | null => {
+    if (typeof email !== 'string') return null;
+    const normalized = email.trim().toLowerCase();
+    return normalized || null;
+};
 const issueUserToken = (user: typeof users.$inferSelect) => jwt.sign(
     { userId: user.id, tokenVersion: user.tokenVersion }, process.env.JWT_SECRET!, { expiresIn: '7d' }
 );
@@ -126,49 +130,6 @@ router.post('/login', async (req, res) => {
 
         if (!normalizedEmail || typeof password !== 'string') {
             return res.status(400).json({ message: 'Email và mật khẩu không hợp lệ' });
-        }
-
-        // Admin login from ENV
-        const envAdmin = getEnvAdminCredentials();
-
-        if (envAdmin && normalizedEmail === envAdmin.email && password === envAdmin.password) {
-            let dbUser = await db.query.users.findFirst({
-                where: eq(users.email, envAdmin.email),
-            });
-            if (!dbUser) {
-                const inserted = await db.insert(users).values({
-                    name: 'Admin',
-                    email: envAdmin.email,
-                    password: await bcrypt.hash(password, 10),
-                    role: 'admin',
-                    balance: 0,
-                    balanceTenths: 0,
-                    emailVerified: true,
-                }).returning();
-                dbUser = inserted[0];
-            } else if (dbUser.role !== 'admin') {
-                await db.update(users).set({ role: 'admin' }).where(eq(users.id, dbUser.id));
-                dbUser.role = 'admin';
-            }
-
-            const token = jwt.sign(
-                { userId: dbUser.id, role: 'admin', tokenVersion: dbUser.tokenVersion },
-                process.env.JWT_SECRET!,
-                { expiresIn: '7d' }
-            );
-
-            return res.json({
-                message: 'Đăng nhập thành công (Admin)',
-                user: {
-                    id: dbUser.id,
-                    name: dbUser.name,
-                    email: dbUser.email,
-                    role: 'admin',
-                    balance: fromTenths(storedBalanceTenths(dbUser)),
-                    emailVerified: true,
-                },
-                token,
-            });
         }
 
         const user = await db.query.users.findFirst({
@@ -295,11 +256,6 @@ router.post('/logout', authMiddleware, async (req: AuthRequest, res) => {
 // Get profile
 router.get('/profile', authMiddleware, async (req: AuthRequest, res) => {
     try {
-        const envAdmin = getEnvAdminProfile(req.user!.id);
-        if (envAdmin) {
-            return res.json({ user: envAdmin });
-        }
-
         const user = await db.query.users.findFirst({
             where: eq(users.id, req.user!.id),
         });
@@ -329,10 +285,6 @@ router.put('/profile', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { name, email } = req.body;
         const userId = req.user!.id;
-
-        if (getEnvAdminProfile(userId)) {
-            return res.status(403).json({ message: 'Không thể sửa tài khoản admin hệ thống' });
-        }
 
         const currentUser = await db.query.users.findFirst({
             where: eq(users.id, userId),
@@ -414,10 +366,6 @@ router.put('/password', authMiddleware, async (req: AuthRequest, res) => {
         const { current_password, password } = req.body;
         if (typeof current_password !== 'string' || !passwordSchema.safeParse(password).success) {
             return res.status(400).json({ message: 'Mật khẩu mới cần ít nhất 8 ký tự và không quá 72 byte' });
-        }
-
-        if (getEnvAdminProfile(req.user!.id)) {
-            return res.status(403).json({ message: 'Không thể đổi mật khẩu admin hệ thống' });
         }
 
         const user = await db.query.users.findFirst({
@@ -618,4 +566,3 @@ router.post('/reset-password', async (req, res) => {
 });
 
 export default router;
-

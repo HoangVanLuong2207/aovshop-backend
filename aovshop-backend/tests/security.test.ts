@@ -21,8 +21,6 @@ process.env.CHECKPASS_ALLOWED_ORIGINS = 'http://localhost:8787';
 delete process.env.BREVO_API_KEY;
 delete process.env.BREVO_SENDER_EMAIL;
 delete process.env.LICENSE_SERVER_URL;
-delete process.env.ADMIN_EMAIL;
-delete process.env.ADMIN_PASSWORD;
 const { db, client } = await import('../src/db/index.js');
 const schema = await import('../src/db/schema.js');
 const { users, products, productAccounts, orders, transactions, deposits, paymentAccounts, settings, promotions, checkpassEntitlements } = schema;

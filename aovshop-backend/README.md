@@ -122,8 +122,8 @@ Quay lại Render → Backend → Environment Variables:
 
 ## Tài khoản quản trị
 
-Không có tài khoản admin hardcode. Cấu hình `ADMIN_EMAIL` và `ADMIN_PASSWORD`
-trong biến môi trường, hoặc sử dụng một tài khoản database có `role=admin`.
+Không có tài khoản admin hardcode. Quyền quản trị chỉ được cấp cho tài khoản
+trong database có `role=admin`; tài khoản đăng nhập bằng mật khẩu đã lưu trong database.
 
 ---
 

@@ -1,6 +1,6 @@
 # Bản vá bảo mật 2026-09-17
 
-Đã sửa luồng nạp tiền, checkout, khuyến mãi, liên kết Google, phiên đăng nhập và HTML thông báo. Không còn tài khoản admin hệ thống được hardcode; admin được cấu hình qua biến môi trường hoặc database.
+Đã sửa luồng nạp tiền, checkout, khuyến mãi, liên kết Google, phiên đăng nhập và HTML thông báo. Không còn tài khoản admin hệ thống được hardcode; quyền admin được quản lý trong database.
 
 ## Triển khai
 
