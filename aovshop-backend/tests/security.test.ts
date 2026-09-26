@@ -95,7 +95,7 @@ test('Checkpass SSO tickets are one-time and scoped to the callback origin', asy
     assert.equal((await serviceRequest('/sso/exchange', { code })).status, 401);
 });
 
-test('quantity billing holds the maximum and charges exactly 0.3 VND per OK account', async () => {
+test('quantity billing charges 0.3 VND per correct password and 0.1 VND per failed login', async () => {
     const u = await user(10000);
     const reference = `quantity-${++seq}`;
     const reserveBody = {
@@ -114,11 +114,11 @@ test('quantity billing holds the maximum and charges exactly 0.3 VND per OK acco
     };
     const settled = await serviceRequest('/quantity/settle', settleBody);
     assert.equal(settled.status, 200);
-    assert.equal(settled.body.final_amount_tenths, 3);
-    assert.equal(settled.body.balance, 9999.7);
+    assert.equal(settled.body.final_amount_tenths, 4);
+    assert.equal(settled.body.balance, 9999.6);
     const repeated = await serviceRequest('/quantity/settle', settleBody);
     assert.equal(repeated.body.order_id, settled.body.order_id);
-    assert.equal((await db.query.users.findFirst({ where: eq(users.id, u.id) }))!.balanceTenths, 99997);
+    assert.equal((await db.query.users.findFirst({ where: eq(users.id, u.id) }))!.balanceTenths, 99996);
     assert.equal((await db.query.orders.findMany({ where: eq(orders.userId, u.id) })).length, 1);
 });
 

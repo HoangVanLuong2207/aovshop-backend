@@ -20,6 +20,7 @@ import { authMiddleware, type AuthRequest } from '../middleware/auth.js';
 import {
     CHECKPASS_BLOCK_MINUTES,
     CHECKPASS_BLOCK_PRICE_TENTHS,
+    CHECKPASS_FAIL_PRICE_TENTHS,
     CHECKPASS_MAX_BLOCKS,
     CHECKPASS_OK_PRICE_TENTHS,
     fromTenths,
@@ -301,7 +302,10 @@ checkpassIntegrationRouter.post('/quantity/settle', asyncRoute(async (req, res) 
             }
             if (operation.status !== 'reserved' || !operation.holdId) throw new Error('INVALID_STATE');
             if (parsed.data.ok_count + parsed.data.fail_count + parsed.data.uncheckable_count > operation.submittedCount) throw new Error('INVALID_COUNTS');
-            const actualTenths = parsed.data.ok_count * operation.unitPriceTenths;
+            const actualTenths = (
+                parsed.data.ok_count * operation.unitPriceTenths
+                + parsed.data.fail_count * CHECKPASS_FAIL_PRICE_TENTHS
+            );
             if (actualTenths > operation.estimatedAmountTenths) throw new Error('AMOUNT_EXCEEDS_HOLD');
             const user = await tx.query.users.findFirst({ where: eq(users.id, operation.userId) });
             if (!user) throw new Error('USER_NOT_FOUND');
@@ -327,6 +331,8 @@ checkpassIntegrationRouter.post('/quantity/settle', asyncRoute(async (req, res) 
                 fail_count: parsed.data.fail_count,
                 uncheckable_count: parsed.data.uncheckable_count,
                 unit_price: fromTenths(operation.unitPriceTenths),
+                ok_unit_price: fromTenths(operation.unitPriceTenths),
+                fail_unit_price: fromTenths(CHECKPASS_FAIL_PRICE_TENTHS),
             });
             const [order] = await tx.insert(orders).values({
                 userId: operation.userId,
@@ -347,11 +353,11 @@ checkpassIntegrationRouter.post('/quantity/settle', asyncRoute(async (req, res) 
             }).returning();
             await tx.insert(orderItems).values({
                 orderId: order.id,
-                productName: `Checkban - ${parsed.data.ok_count} tài khoản OK`,
-                quantity: parsed.data.ok_count,
-                price: fromTenths(operation.unitPriceTenths),
+                productName: `Checkban - ${parsed.data.ok_count} đúng pass, ${parsed.data.fail_count} không thể log`,
+                quantity: 1,
+                price: fromTenths(actualTenths),
                 total: fromTenths(actualTenths),
-                priceTenths: operation.unitPriceTenths,
+                priceTenths: actualTenths,
                 totalTenths: actualTenths,
             });
             await tx.insert(transactions).values({
