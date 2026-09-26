@@ -23,6 +23,7 @@ import {
     CHECKPASS_FAIL_PRICE_TENTHS,
     CHECKPASS_MAX_BLOCKS,
     CHECKPASS_OK_PRICE_TENTHS,
+    CHECKPASS_VVIP_BLOCK_PRICE_TENTHS,
     fromTenths,
     storedBalanceTenths,
 } from '../services/money.js';
@@ -31,6 +32,8 @@ const ticketLifetimeMs = 60_000;
 const holdLifetimeMs = 24 * 60 * 60 * 1000;
 const externalReference = z.string().trim().min(8).max(128).regex(/^[A-Za-z0-9._:-]+$/);
 const count = z.number().int().min(0).max(10_000_000);
+const serviceTierSchema = z.enum(['normal', 'vvip']);
+type ServiceTier = z.infer<typeof serviceTierSchema>;
 
 const asyncRoute = (handler: (req: any, res: any, next: NextFunction) => Promise<unknown>) =>
     (req: Request, res: Response, next: NextFunction) => { void handler(req, res, next).catch(next); };
@@ -68,11 +71,12 @@ function serviceAuth(req: Request, res: Response, next: NextFunction) {
     next();
 }
 
-async function activeEntitlement(tx: any, userId: number, now = new Date()) {
+async function activeEntitlement(tx: any, userId: number, serviceTier: ServiceTier = 'normal', now = new Date()) {
     return tx.query.checkpassEntitlements.findFirst({
         where: and(
             eq(checkpassEntitlements.userId, userId),
             eq(checkpassEntitlements.status, 'active'),
+            eq(checkpassEntitlements.serviceTier, serviceTier),
             gt(checkpassEntitlements.expiresAt, now.toISOString()),
         ),
         orderBy: desc(checkpassEntitlements.expiresAt),
@@ -91,14 +95,27 @@ async function accountSnapshot(tx: any, userId: number) {
         ));
     const balanceTenths = storedBalanceTenths(user);
     const heldTenths = Number(held[0]?.total || 0);
-    const entitlement = await activeEntitlement(tx, userId);
+    const entitlement = await activeEntitlement(tx, userId, 'normal');
+    const vvipEntitlement = await activeEntitlement(tx, userId, 'vvip');
     return {
         user,
         balanceTenths,
         heldTenths,
         availableTenths: Math.max(0, balanceTenths - heldTenths),
         entitlement,
+        vvipEntitlement,
     };
+}
+
+function publicEntitlement(entitlement: any) {
+    return entitlement ? {
+        id: entitlement.id,
+        starts_at: entitlement.startsAt,
+        expires_at: entitlement.expiresAt,
+        block_count: entitlement.blockCount,
+        duration_minutes: entitlement.durationMinutes,
+        service_tier: entitlement.serviceTier || 'normal',
+    } : null;
 }
 
 function publicSnapshot(snapshot: NonNullable<Awaited<ReturnType<typeof accountSnapshot>>>) {
@@ -114,12 +131,12 @@ function publicSnapshot(snapshot: NonNullable<Awaited<ReturnType<typeof accountS
         balance: fromTenths(snapshot.balanceTenths),
         held_balance: fromTenths(snapshot.heldTenths),
         available_balance: fromTenths(snapshot.availableTenths),
-        entitlement: snapshot.entitlement ? {
-            id: snapshot.entitlement.id,
-            starts_at: snapshot.entitlement.startsAt,
-            expires_at: snapshot.entitlement.expiresAt,
-            block_count: snapshot.entitlement.blockCount,
-        } : null,
+        entitlement: publicEntitlement(snapshot.entitlement),
+        vvip_entitlement: publicEntitlement(snapshot.vvipEntitlement),
+        entitlements: {
+            normal: publicEntitlement(snapshot.entitlement),
+            vvip: publicEntitlement(snapshot.vvipEntitlement),
+        },
     };
 }
 
@@ -193,27 +210,37 @@ checkpassIntegrationRouter.post('/quote', asyncRoute(async (req, res) => {
     const parsed = z.discriminatedUnion('mode', [
         z.object({ mode: z.literal('quantity'), user_id: z.number().int().positive(), submitted_count: count }),
         z.object({ mode: z.literal('time'), user_id: z.number().int().positive(), block_count: z.number().int().min(1).max(CHECKPASS_MAX_BLOCKS) }),
+        z.object({ mode: z.literal('vvip'), user_id: z.number().int().positive(), block_count: z.number().int().min(1).max(CHECKPASS_MAX_BLOCKS) }),
     ]).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ ok: false, error: 'Dữ liệu báo giá không hợp lệ' });
     const snapshot = await accountSnapshot(db, parsed.data.user_id);
     if (!snapshot) return res.status(404).json({ ok: false, error: 'User not found' });
+    const serviceTier: ServiceTier = parsed.data.mode === 'vvip' ? 'vvip' : 'normal';
+    const unitPriceTenths = parsed.data.mode === 'quantity'
+        ? CHECKPASS_OK_PRICE_TENTHS
+        : parsed.data.mode === 'vvip'
+            ? CHECKPASS_VVIP_BLOCK_PRICE_TENTHS
+            : CHECKPASS_BLOCK_PRICE_TENTHS;
     const amountTenths = parsed.data.mode === 'quantity'
-        ? parsed.data.submitted_count * CHECKPASS_OK_PRICE_TENTHS
-        : parsed.data.block_count * CHECKPASS_BLOCK_PRICE_TENTHS;
-    const coveredByTime = parsed.data.mode === 'time' && Boolean(snapshot.entitlement);
+        ? parsed.data.submitted_count * unitPriceTenths
+        : parsed.data.block_count * unitPriceTenths;
+    const scopedEntitlement = serviceTier === 'vvip' ? snapshot.vvipEntitlement : snapshot.entitlement;
+    const coveredByTime = parsed.data.mode !== 'quantity' && Boolean(scopedEntitlement);
     const payableTenths = coveredByTime ? 0 : amountTenths;
     res.json({
+        ...publicSnapshot(snapshot),
         ok: true,
         mode: parsed.data.mode,
+        service_tier: serviceTier,
         amount: fromTenths(payableTenths),
         amount_tenths: payableTenths,
         maximum_amount: fromTenths(amountTenths),
         maximum_amount_tenths: amountTenths,
         covered_by_time: coveredByTime,
         affordable: snapshot.availableTenths >= payableTenths,
-        unit_price: parsed.data.mode === 'quantity' ? fromTenths(CHECKPASS_OK_PRICE_TENTHS) : fromTenths(CHECKPASS_BLOCK_PRICE_TENTHS),
-        duration_minutes: parsed.data.mode === 'time' ? parsed.data.block_count * CHECKPASS_BLOCK_MINUTES : null,
-        ...publicSnapshot(snapshot),
+        unit_price: fromTenths(unitPriceTenths),
+        duration_minutes: parsed.data.mode === 'quantity' ? null : parsed.data.block_count * CHECKPASS_BLOCK_MINUTES,
+        entitlement: publicEntitlement(scopedEntitlement),
     });
 }));
 
@@ -437,27 +464,34 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
         idempotency_key: externalReference,
         extend: z.boolean().optional().default(false),
         master_job_id: z.number().int().positive().optional(),
+        service_tier: serviceTierSchema.optional().default('normal'),
     }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ ok: false, error: 'Dữ liệu thuê thời gian không hợp lệ' });
     try {
         const result = await db.transaction(async tx => {
+            const serviceTier = parsed.data.service_tier;
+            const billingMode = serviceTier === 'vvip' ? 'vvip' : 'time';
+            const blockPriceTenths = serviceTier === 'vvip'
+                ? CHECKPASS_VVIP_BLOCK_PRICE_TENTHS
+                : CHECKPASS_BLOCK_PRICE_TENTHS;
             const previous = await tx.query.checkpassBillingOperations.findFirst({
                 where: eq(checkpassBillingOperations.externalJobReference, parsed.data.external_job_reference),
             });
             if (previous) {
-                if (previous.userId !== parsed.data.user_id || previous.billingMode !== 'time') throw new Error('REFERENCE_CONFLICT');
+                if (previous.userId !== parsed.data.user_id || previous.billingMode !== billingMode || previous.serviceTier !== serviceTier) throw new Error('REFERENCE_CONFLICT');
                 const entitlement = previous.entitlementId
                     ? await tx.query.checkpassEntitlements.findFirst({ where: eq(checkpassEntitlements.id, previous.entitlementId) })
                     : null;
                 return { operation: previous, entitlement, snapshot: await accountSnapshot(tx, previous.userId), charged: previous.finalAmountTenths > 0 };
             }
-            const current = await activeEntitlement(tx, parsed.data.user_id);
+            const current = await activeEntitlement(tx, parsed.data.user_id, serviceTier);
             const now = new Date();
             if (current && !parsed.data.extend) {
                 const [operation] = await tx.insert(checkpassBillingOperations).values({
                     externalJobReference: parsed.data.external_job_reference,
                     userId: parsed.data.user_id,
-                    billingMode: 'time',
+                    billingMode,
+                    serviceTier,
                     entitlementId: current.id,
                     status: 'covered',
                     idempotencyKey: parsed.data.idempotency_key,
@@ -466,7 +500,7 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
                 }).returning();
                 return { operation, entitlement: current, snapshot: await accountSnapshot(tx, parsed.data.user_id), charged: false };
             }
-            const amountTenths = parsed.data.block_count * CHECKPASS_BLOCK_PRICE_TENTHS;
+            const amountTenths = parsed.data.block_count * blockPriceTenths;
             const user = await tx.query.users.findFirst({ where: eq(users.id, parsed.data.user_id) });
             if (!user) throw new Error('USER_NOT_FOUND');
             const snapshotBefore = await accountSnapshot(tx, parsed.data.user_id);
@@ -485,7 +519,8 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
             const startsAt = current && parsed.data.extend ? new Date(current.expiresAt) : now;
             const expiresAt = new Date(startsAt.getTime() + parsed.data.block_count * CHECKPASS_BLOCK_MINUTES * 60_000);
             const metadata = JSON.stringify({
-                type: 'checkban_time',
+                type: serviceTier === 'vvip' ? 'checkban_vvip' : 'checkban_time',
+                service_tier: serviceTier,
                 master_job_id: parsed.data.master_job_id || null,
                 external_job_reference: parsed.data.external_job_reference,
                 block_count: parsed.data.block_count,
@@ -499,16 +534,16 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
                 orderType: 'instant',
                 subtotal: fromTenths(amountTenths), discount: 0, total: fromTenths(amountTenths),
                 subtotalTenths: amountTenths, discountTenths: 0, totalTenths: amountTenths,
-                source: 'checkban_time', externalReference: parsed.data.external_job_reference,
+                source: serviceTier === 'vvip' ? 'checkban_vvip' : 'checkban_time', externalReference: parsed.data.external_job_reference,
                 metadata, deliveryData: metadata, deliveredAt: now.toISOString(), createdAt: now.toISOString(),
             }).returning();
             await tx.insert(orderItems).values({
                 orderId: order.id,
-                productName: `Thuê Checkban ${parsed.data.block_count * CHECKPASS_BLOCK_MINUTES} phút`,
+                productName: `Thuê Checkban${serviceTier === 'vvip' ? ' VVIP' : ''} ${parsed.data.block_count * CHECKPASS_BLOCK_MINUTES} phút`,
                 quantity: parsed.data.block_count,
-                price: fromTenths(CHECKPASS_BLOCK_PRICE_TENTHS),
+                price: fromTenths(blockPriceTenths),
                 total: fromTenths(amountTenths),
-                priceTenths: CHECKPASS_BLOCK_PRICE_TENTHS,
+                priceTenths: blockPriceTenths,
                 totalTenths: amountTenths,
             });
             const [entitlement] = await tx.insert(checkpassEntitlements).values({
@@ -518,7 +553,8 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
                 startsAt: startsAt.toISOString(),
                 expiresAt: expiresAt.toISOString(),
                 orderId: order.id,
-                source: 'checkpass',
+                serviceTier,
+                source: serviceTier === 'vvip' ? 'checkpass_vvip' : 'checkpass',
                 externalReference: parsed.data.external_job_reference,
                 createdAt: now.toISOString(),
             }).returning();
@@ -526,14 +562,15 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
                 userId: user.id, type: 'purchase', amount: -fromTenths(amountTenths), amountTenths: -amountTenths,
                 balanceBefore: fromTenths(beforeTenths), balanceAfter: fromTenths(afterTenths),
                 balanceBeforeTenths: beforeTenths, balanceAfterTenths: afterTenths,
-                status: 'completed', description: `Thuê Checkban ${entitlement.durationMinutes} phút`,
+                status: 'completed', description: `Thuê Checkban${serviceTier === 'vvip' ? ' VVIP' : ''} ${entitlement.durationMinutes} phút`,
                 reference: parsed.data.external_job_reference, orderId: order.id,
             });
             const [operation] = await tx.insert(checkpassBillingOperations).values({
                 externalJobReference: parsed.data.external_job_reference,
                 userId: user.id,
-                billingMode: 'time',
-                unitPriceTenths: CHECKPASS_BLOCK_PRICE_TENTHS,
+                billingMode,
+                serviceTier,
+                unitPriceTenths: blockPriceTenths,
                 estimatedAmountTenths: amountTenths,
                 finalAmountTenths: amountTenths,
                 entitlementId: entitlement.id,
@@ -544,21 +581,18 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
             }).returning();
             return { operation, entitlement, snapshot: await accountSnapshot(tx, user.id), charged: true };
         });
+        const entitlementPayload = publicEntitlement(result.entitlement);
         res.json({
+            ...publicSnapshot(result.snapshot!),
             ok: true,
             status: result.operation.status,
+            service_tier: result.operation.serviceTier || 'normal',
             charged: result.charged,
             amount: fromTenths(result.operation.finalAmountTenths),
             amount_tenths: result.operation.finalAmountTenths,
             order_id: result.operation.orderId,
-            activated_entitlement: result.entitlement ? {
-                id: result.entitlement.id,
-                starts_at: result.entitlement.startsAt,
-                expires_at: result.entitlement.expiresAt,
-                block_count: result.entitlement.blockCount,
-                duration_minutes: result.entitlement.durationMinutes,
-            } : null,
-            ...publicSnapshot(result.snapshot!),
+            entitlement: entitlementPayload,
+            activated_entitlement: entitlementPayload,
         });
     } catch (error: any) {
         const code = String(error?.message || '');

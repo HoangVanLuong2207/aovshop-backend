@@ -148,6 +148,39 @@ test('active time entitlement allows another time job without a second charge', 
     assert.equal((await db.query.orders.findMany({ where: eq(orders.userId, u.id) })).length, 1);
 });
 
+test('VVIP time costs 10,000 VND per 30 minutes and is isolated from normal time', async () => {
+    const u = await user(30000);
+    const normalRef = `time-normal-${++seq}`;
+    const normal = await serviceRequest('/time/activate', {
+        user_id: u.id, external_job_reference: normalRef, block_count: 1,
+        service_tier: 'normal', idempotency_key: `time:${normalRef}`,
+    });
+    assert.equal(normal.status, 200);
+    assert.equal(normal.body.amount_tenths, 50000);
+
+    const vvipQuote = await serviceRequest('/quote', { mode: 'vvip', user_id: u.id, block_count: 1 });
+    assert.equal(vvipQuote.status, 200);
+    assert.equal(vvipQuote.body.covered_by_time, false);
+    assert.equal(vvipQuote.body.amount_tenths, 100000);
+    assert.equal(vvipQuote.body.service_tier, 'vvip');
+
+    const vvipRef = `time-vvip-${++seq}`;
+    const vvip = await serviceRequest('/time/activate', {
+        user_id: u.id, external_job_reference: vvipRef, block_count: 1,
+        service_tier: 'vvip', idempotency_key: `time:${vvipRef}`,
+    });
+    assert.equal(vvip.status, 200);
+    assert.equal(vvip.body.amount_tenths, 100000);
+    assert.equal(vvip.body.service_tier, 'vvip');
+    assert.equal(vvip.body.balance, 15000);
+
+    const coveredQuote = await serviceRequest('/quote', { mode: 'vvip', user_id: u.id, block_count: 1 });
+    assert.equal(coveredQuote.body.covered_by_time, true);
+    assert.equal(coveredQuote.body.amount_tenths, 0);
+    const entitlements = await db.query.checkpassEntitlements.findMany({ where: eq(checkpassEntitlements.userId, u.id) });
+    assert.deepEqual(entitlements.map(item => item.serviceTier).sort(), ['normal', 'vvip']);
+});
+
 test('shop Checkpass packages use the fixed 5,000 VND per 30 minutes price', async () => {
     const u = await user(10000);
     const p = await product({ checkpassHours: 0.5, price: 1 });

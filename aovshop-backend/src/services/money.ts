@@ -20,6 +20,7 @@ export const CHECKPASS_OK_PRICE_TENTHS = 3;
 export const CHECKPASS_FAIL_PRICE_TENTHS = 1;
 export const CHECKPASS_BLOCK_MINUTES = 30;
 export const CHECKPASS_BLOCK_PRICE_TENTHS = 50_000;
+export const CHECKPASS_VVIP_BLOCK_PRICE_TENTHS = 100_000;
 const configuredMaxBlocks = Number.parseInt(process.env.CHECKPASS_MAX_BLOCKS || '48', 10);
 export const CHECKPASS_MAX_BLOCKS = Number.isSafeInteger(configuredMaxBlocks) && configuredMaxBlocks > 0
     ? configuredMaxBlocks

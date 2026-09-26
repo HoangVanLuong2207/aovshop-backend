@@ -74,6 +74,7 @@ export async function migrateCheckpass(client: Client) {
             expires_at TEXT NOT NULL,
             order_id INTEGER REFERENCES orders(id),
             status TEXT NOT NULL DEFAULT 'active',
+            service_tier TEXT NOT NULL DEFAULT 'normal',
             source TEXT NOT NULL DEFAULT 'checkpass',
             external_reference TEXT NOT NULL UNIQUE,
             created_at TEXT
@@ -85,6 +86,7 @@ export async function migrateCheckpass(client: Client) {
             external_job_reference TEXT NOT NULL UNIQUE,
             user_id INTEGER NOT NULL REFERENCES users(id),
             billing_mode TEXT NOT NULL,
+            service_tier TEXT NOT NULL DEFAULT 'normal',
             submitted_count INTEGER NOT NULL DEFAULT 0,
             ok_count INTEGER NOT NULL DEFAULT 0,
             fail_count INTEGER NOT NULL DEFAULT 0,
@@ -102,6 +104,9 @@ export async function migrateCheckpass(client: Client) {
         )`);
         await tx.execute('CREATE INDEX IF NOT EXISTS idx_checkpass_billing_user ON checkpass_billing_operations(user_id)');
         await tx.execute('CREATE INDEX IF NOT EXISTS idx_checkpass_billing_status ON checkpass_billing_operations(status)');
+        await addColumn(tx, 'checkpass_entitlements', 'service_tier', "TEXT NOT NULL DEFAULT 'normal'");
+        await addColumn(tx, 'checkpass_billing_operations', 'service_tier', "TEXT NOT NULL DEFAULT 'normal'");
+        await tx.execute('CREATE INDEX IF NOT EXISTS idx_checkpass_entitlements_tier ON checkpass_entitlements(user_id,service_tier,expires_at)');
         await tx.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_source_reference ON orders(source,external_reference)');
 
         await tx.commit();
