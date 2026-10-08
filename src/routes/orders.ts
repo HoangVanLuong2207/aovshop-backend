@@ -5,7 +5,7 @@ import { eq, desc, and, gte, lte, inArray, sql } from 'drizzle-orm';
 import { authMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
-import { CHECKPASS_BLOCK_MINUTES, CHECKPASS_BLOCK_PRICE_TENTHS, fromTenths, storedBalanceTenths, toTenths } from '../services/money.js';
+import { CHECKPASS_BLOCK_MINUTES, CHECKPASS_BLOCK_PRICE_TENTHS, fromTenths, storedBalanceTenths, storedCheckpassBonusTenths, toTenths } from '../services/money.js';
 
 const router = Router();
 class CheckoutError extends Error {
@@ -231,6 +231,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
 
             // Calculate totals and verify account availability
             let subtotal = 0;
+            let checkpassSubtotal = 0;
             const orderProducts = [];
             const allTargetAccounts: any[] = [];
             let hasPreorder = false;
@@ -287,6 +288,7 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 if (!Number.isFinite(price) || price < 0) throw new CheckoutError(400, 'Giá sản phẩm không hợp lệ');
                 const itemTotal = price * quantity;
                 subtotal += itemTotal;
+                if (checkpassHours > 0) checkpassSubtotal += itemTotal;
                 subtotalByProductId[product.id] = (subtotalByProductId[product.id] || 0) + itemTotal;
 
                 orderProducts.push({
@@ -390,8 +392,13 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             const subtotalTenths = toTenths(subtotal);
             const discountTenths = toTenths(discount);
             const totalTenths = subtotalTenths - discountTenths;
+            const checkpassSubtotalTenths = toTenths(checkpassSubtotal);
             const userBalanceTenths = storedBalanceTenths(user);
-            const activeHolds = await tx.select({ total: sql<number>`COALESCE(SUM(${balanceHolds.amountTenths}), 0)` })
+            const userBonusTenths = storedCheckpassBonusTenths(user);
+            const activeHolds = await tx.select({
+                total: sql<number>`COALESCE(SUM(${balanceHolds.amountTenths}), 0)`,
+                bonus: sql<number>`COALESCE(SUM(${balanceHolds.bonusAmountTenths}), 0)`,
+            })
                 .from(balanceHolds)
                 .where(and(
                     eq(balanceHolds.userId, user.id),
@@ -399,9 +406,15 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                     sql`${balanceHolds.expiresAt} > ${new Date().toISOString()}`,
                 ));
             const heldTenths = Number(activeHolds[0]?.total || 0);
+            const heldBonusTenths = Number(activeHolds[0]?.bonus || 0);
+            const heldCashTenths = Math.max(0, heldTenths - heldBonusTenths);
+            const availableBonusTenths = Math.max(0, userBonusTenths - heldBonusTenths);
+            const bonusChargeTenths = Math.min(checkpassSubtotalTenths, totalTenths, availableBonusTenths);
+            const cashChargeTenths = totalTenths - bonusChargeTenths;
 
-            // Check balance
-            if (userBalanceTenths - heldTenths < totalTenths) {
+            // Promotional credit is scoped to Checkpass line items only. A cart
+            // containing regular products must still cover those items in cash.
+            if (userBalanceTenths - heldCashTenths < cashChargeTenths) {
                 throw new CheckoutError(400, 'Số dư không đủ');
             }
 
@@ -482,13 +495,15 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
             }
 
             // Update user balance (charged immediately)
-            const newBalanceTenths = userBalanceTenths - totalTenths;
+            const newBalanceTenths = userBalanceTenths - cashChargeTenths;
+            const newBonusTenths = userBonusTenths - bonusChargeTenths;
             const newBalance = fromTenths(newBalanceTenths);
             const charged = await tx.update(users)
-                .set({ balance: newBalance, balanceTenths: newBalanceTenths })
+                .set({ balance: newBalance, balanceTenths: newBalanceTenths, checkpassBonusTenths: newBonusTenths })
                 .where(and(
                     eq(users.id, user.id),
-                    sql`COALESCE(${users.balanceTenths}, ROUND(${users.balance} * 10)) - ${heldTenths} >= ${totalTenths}`,
+                    sql`COALESCE(${users.balanceTenths}, ROUND(${users.balance} * 10)) - ${heldCashTenths} >= ${cashChargeTenths}`,
+                    sql`COALESCE(${users.checkpassBonusTenths}, 0) - ${heldBonusTenths} >= ${bonusChargeTenths}`,
                 ))
                 .returning({ id: users.id });
             if (charged.length !== 1) throw new CheckoutError(400, 'Số dư không đủ');
@@ -503,6 +518,9 @@ router.post('/checkout', authMiddleware, async (req: AuthRequest, res) => {
                 balanceAfter: newBalance,
                 balanceBeforeTenths: userBalanceTenths,
                 balanceAfterTenths: newBalanceTenths,
+                checkpassBonusAmountTenths: -bonusChargeTenths,
+                checkpassBonusBeforeTenths: userBonusTenths,
+                checkpassBonusAfterTenths: newBonusTenths,
                 status: 'completed',
                 description: orderType === 'preorder'
                     ? `Đặt hàng pre-order #${order.id}`

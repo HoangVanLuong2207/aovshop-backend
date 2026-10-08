@@ -6,7 +6,8 @@ import { categories, products, promotions, orders, orderItems, transactions, use
 import { eq, desc, sql, and, or, inArray, gte, lte, like, lt } from 'drizzle-orm';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
-import { CHECKPASS_BLOCK_MINUTES, fromTenths, storedBalanceTenths, toTenths } from '../services/money.js';
+import { CHECKPASS_BLOCK_MINUTES, fromTenths, storedBalanceTenths, storedCheckpassBonusTenths, toTenths } from '../services/money.js';
+import { MAX_CHECKPASS_BONUS_PERCENT, MAXIMUM_DEPOSIT_AMOUNT } from '../services/depositPromotion.js';
 
 
 const router = Router();
@@ -1110,8 +1111,11 @@ router.post('/deposits/:id/approve', async (req, res) => {
             const user = deposit.user;
             const amount = deposit.amount;
             const currentBalanceTenths = storedBalanceTenths(user);
+            const currentBonusTenths = storedCheckpassBonusTenths(user);
             const amountTenths = toTenths(amount);
             const newBalanceTenths = currentBalanceTenths + amountTenths;
+            const awardedBonusTenths = Number(deposit.checkpassBonusTenths || 0);
+            const newBonusTenths = currentBonusTenths + awardedBonusTenths;
             const currentBalance = fromTenths(currentBalanceTenths);
             const newBalance = fromTenths(newBalanceTenths);
 
@@ -1123,7 +1127,11 @@ router.post('/deposits/:id/approve', async (req, res) => {
               .returning({ id: deposits.id });
             if (claimed.length !== 1) throw new Error('Đơn nạp đã hoàn thành trước đó');
 
-            await tx.update(users).set({ balance: newBalance, balanceTenths: newBalanceTenths }).where(eq(users.id, user.id));
+            await tx.update(users).set({
+                balance: newBalance,
+                balanceTenths: newBalanceTenths,
+                checkpassBonusTenths: newBonusTenths,
+            }).where(eq(users.id, user.id));
 
             // Create transaction
             await tx.insert(transactions).values({
@@ -1135,6 +1143,9 @@ router.post('/deposits/:id/approve', async (req, res) => {
                 balanceAfter: newBalance,
                 balanceBeforeTenths: currentBalanceTenths,
                 balanceAfterTenths: newBalanceTenths,
+                checkpassBonusAmountTenths: awardedBonusTenths,
+                checkpassBonusBeforeTenths: currentBonusTenths,
+                checkpassBonusAfterTenths: newBonusTenths,
                 status: 'completed',
                 description: `Duyệt nạp tiền thủ công bởi Admin (Đơn #${deposit.id})`,
                 reference: deposit.reference,
@@ -1244,6 +1255,24 @@ router.post('/settings', async (req, res) => {
                 return res.status(400).json({ message: 'Số tiền nạp tối thiểu phải là số nguyên từ 1đ đến 1.000.000.000đ' });
             }
             settingsData.minimum_deposit_amount = String(minimumDepositAmount);
+        }
+        if (Object.prototype.hasOwnProperty.call(settingsData, 'checkpass_deposit_bonus_enabled')) {
+            const enabled = settingsData.checkpass_deposit_bonus_enabled;
+            settingsData.checkpass_deposit_bonus_enabled = ['1', 'true', 'yes', 'on'].includes(String(enabled).toLowerCase()) ? '1' : '0';
+        }
+        if (Object.prototype.hasOwnProperty.call(settingsData, 'checkpass_deposit_bonus_minimum_amount')) {
+            const minimumAmount = Number(settingsData.checkpass_deposit_bonus_minimum_amount);
+            if (!Number.isSafeInteger(minimumAmount) || minimumAmount < 1 || minimumAmount > MAXIMUM_DEPOSIT_AMOUNT) {
+                return res.status(400).json({ message: 'Mức nạp nhận khuyến mãi phải là số nguyên từ 1đ đến 1.000.000.000đ' });
+            }
+            settingsData.checkpass_deposit_bonus_minimum_amount = String(minimumAmount);
+        }
+        if (Object.prototype.hasOwnProperty.call(settingsData, 'checkpass_deposit_bonus_percent')) {
+            const percent = Number(settingsData.checkpass_deposit_bonus_percent);
+            if (!Number.isFinite(percent) || percent < 0 || percent > MAX_CHECKPASS_BONUS_PERCENT || Math.abs(Math.round(percent * 100) - percent * 100) > 1e-8) {
+                return res.status(400).json({ message: 'Phần trăm khuyến mãi phải từ 0% đến 1.000% và có tối đa 2 chữ số thập phân' });
+            }
+            settingsData.checkpass_deposit_bonus_percent = String(percent);
         }
 
         // Define keys we want to exclude (metadata from previous GET requests)

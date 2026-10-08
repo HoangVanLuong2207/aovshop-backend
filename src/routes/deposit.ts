@@ -6,23 +6,15 @@ import { eq, and, lt, sql, inArray } from 'drizzle-orm';
 import { authMiddleware, adminMiddleware, AuthRequest } from '../middleware/auth.js';
 import { PushService } from '../services/push.js';
 import { TelegramService } from '../services/telegram.js';
-import { fromTenths, storedBalanceTenths, toTenths } from '../services/money.js';
+import { fromTenths, storedBalanceTenths, storedCheckpassBonusTenths, toTenths } from '../services/money.js';
+import {
+    calculateCheckpassDepositBonusTenths,
+    getDepositPromotionConfig,
+    MAXIMUM_DEPOSIT_AMOUNT,
+    publicDepositPromotionConfig,
+} from '../services/depositPromotion.js';
 
 const router = Router();
-
-const DEFAULT_MINIMUM_DEPOSIT_AMOUNT = 10000;
-const MAXIMUM_DEPOSIT_AMOUNT = 1000000000;
-
-const getMinimumDepositAmount = async () => {
-    const setting = await db.query.settings.findFirst({
-        where: eq(settings.key, 'minimum_deposit_amount'),
-    });
-    const configuredAmount = Number(setting?.value);
-
-    return Number.isSafeInteger(configuredAmount) && configuredAmount > 0 && configuredAmount <= MAXIMUM_DEPOSIT_AMOUNT
-        ? configuredAmount
-        : DEFAULT_MINIMUM_DEPOSIT_AMOUNT;
-};
 
 const getCurrentMonthDepositCountsByBank = async (bankIds: number[]) => {
     if (bankIds.length === 0) return new Map<number, number>();
@@ -113,7 +105,7 @@ router.get('/shop-info', async (req, res) => {
 // source of truth, so changing the setting takes effect without a deployment.
 router.get('/config', async (req, res) => {
     try {
-        res.json({ minimum_deposit_amount: await getMinimumDepositAmount() });
+        res.json(publicDepositPromotionConfig(await getDepositPromotionConfig(db)));
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Lỗi server' });
@@ -124,7 +116,8 @@ router.get('/config', async (req, res) => {
 router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const { amount } = req.body;
-        const minimumDepositAmount = await getMinimumDepositAmount();
+        const promotionConfig = await getDepositPromotionConfig(db);
+        const minimumDepositAmount = promotionConfig.minimumDepositAmount;
         if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount < minimumDepositAmount || amount > MAXIMUM_DEPOSIT_AMOUNT) {
             const formattedMinimum = new Intl.NumberFormat('vi-VN').format(minimumDepositAmount);
             return res.status(400).json({
@@ -174,10 +167,12 @@ router.post('/create', authMiddleware, async (req: AuthRequest, res) => {
             reference,
             bankId: selectedBank.id,
             status: 'pending',
+            checkpassBonusTenths: calculateCheckpassDepositBonusTenths(amount, promotionConfig),
         }).returning();
 
         res.json({
             ...newDeposit,
+            checkpass_bonus_amount: fromTenths(newDeposit.checkpassBonusTenths),
             bank_name: selectedBank.bankName,
             account_number: selectedBank.accountNumber,
             account_name: selectedBank.accountName,
@@ -237,23 +232,36 @@ router.post('/webhook', async (req, res) => {
             const user = await tx.query.users.findFirst({ where: eq(users.id, userId) });
             if (!user) return { error: 'Invalid balance' };
             const beforeTenths = storedBalanceTenths(user);
+            const bonusBeforeTenths = storedCheckpassBonusTenths(user);
             const amountTenths = toTenths(amount);
             const afterTenths = beforeTenths + amountTenths;
-            if (!Number.isSafeInteger(afterTenths)) return { error: 'Invalid balance' };
+            const awardedBonusTenths = Number(deposit.checkpassBonusTenths || 0);
+            const bonusAfterTenths = bonusBeforeTenths + awardedBonusTenths;
+            if (!Number.isSafeInteger(afterTenths) || !Number.isSafeInteger(bonusAfterTenths)) return { error: 'Invalid balance' };
             const claimed = await tx.update(deposits)
                 .set({ status: 'completed', transactionId: String(transactionId), updatedAt: new Date().toISOString() })
                 .where(and(eq(deposits.id, deposit.id), inArray(deposits.status, ['pending', 'expired'])))
                 .returning({ id: deposits.id });
             if (claimed.length !== 1) throw new Error('Deposit changed during processing');
             await tx.insert(paymentWebhookEvents).values({ id: eventId, depositId: deposit.id });
-            await tx.update(users).set({ balance: fromTenths(afterTenths), balanceTenths: afterTenths }).where(eq(users.id, userId));
+            await tx.update(users).set({
+                balance: fromTenths(afterTenths),
+                balanceTenths: afterTenths,
+                checkpassBonusTenths: bonusAfterTenths,
+            }).where(eq(users.id, userId));
             await tx.insert(transactions).values({
                 userId, type: 'deposit', amount, amountTenths,
                 balanceBefore: fromTenths(beforeTenths), balanceBeforeTenths: beforeTenths,
                 balanceAfter: fromTenths(afterTenths), balanceAfterTenths: afterTenths, status: 'completed',
-                description: 'Nạp tiền tự động qua SePay', reference: String(transactionId),
+                checkpassBonusAmountTenths: awardedBonusTenths,
+                checkpassBonusBeforeTenths: bonusBeforeTenths,
+                checkpassBonusAfterTenths: bonusAfterTenths,
+                description: awardedBonusTenths > 0
+                    ? `Nạp tiền tự động qua SePay · thưởng Checkpass ${fromTenths(awardedBonusTenths)}đ`
+                    : 'Nạp tiền tự động qua SePay',
+                reference: String(transactionId),
             });
-            return { success: true };
+            return { success: true, awardedBonusTenths };
         });
         if (result.duplicate) return res.json({ success: true, message: 'Already processed' });
         if (result.error) return res.status(400).json({ success: false, message: result.error });
@@ -291,7 +299,7 @@ router.post('/webhook', async (req, res) => {
             console.error('[Notification Fetch Error]:', err);
         }
 
-        res.json({ success: true });
+        res.json({ success: true, checkpass_bonus_amount: fromTenths(result.awardedBonusTenths || 0) });
     } catch (error) {
         console.error('Webhook error:', error);
         res.status(500).json({ success: false });
@@ -303,7 +311,10 @@ router.get('/status/:reference', authMiddleware, async (req: AuthRequest, res) =
         const deposit = await db.query.deposits.findFirst({
             where: and(eq(deposits.reference, req.params.reference), eq(deposits.userId, req.user!.id)),
         });
-        res.json(deposit || { status: 'not_found' });
+        res.json(deposit ? {
+            ...deposit,
+            checkpass_bonus_amount: fromTenths(deposit.checkpassBonusTenths),
+        } : { status: 'not_found' });
     } catch (error) {
         res.status(500).json({ message: 'Error' });
     }
@@ -319,7 +330,10 @@ router.get('/history', authMiddleware, async (req: AuthRequest, res) => {
             } } },
             orderBy: (d, { desc }) => [desc(d.id)],
         });
-        res.json(data);
+        res.json(data.map(deposit => ({
+            ...deposit,
+            checkpass_bonus_amount: fromTenths(deposit.checkpassBonusTenths),
+        })));
     } catch (error) {
         res.status(500).json({ message: 'Error' });
     }
@@ -328,7 +342,10 @@ router.get('/history', authMiddleware, async (req: AuthRequest, res) => {
 router.get('/balance', authMiddleware, async (req: AuthRequest, res) => {
     try {
         const user = await db.query.users.findFirst({ where: eq(users.id, req.user!.id) });
-        res.json({ balance: user ? fromTenths(storedBalanceTenths(user)) : 0 });
+        res.json({
+            balance: user ? fromTenths(storedBalanceTenths(user)) : 0,
+            checkpass_bonus_balance: user ? fromTenths(storedCheckpassBonusTenths(user)) : 0,
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error' });
     }

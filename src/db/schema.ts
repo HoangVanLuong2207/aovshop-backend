@@ -15,6 +15,10 @@ export const users = sqliteTable('users', {
     // Canonical money value. One unit is 0.1 VND; `balance` remains a
     // compatibility/display mirror while the application is migrated.
     balanceTenths: integer('balance_tenths'),
+    // Promotional credit can only be spent on Checkpass services/products.
+    // Nullable in the ORM for rolling compatibility with legacy databases;
+    // startup migration backfills it to zero and enforces the application invariant.
+    checkpassBonusTenths: integer('checkpass_bonus_tenths').default(0),
     emailVerified: integer('email_verified', { mode: 'boolean' }).default(true).notNull(), // default true for existing users
     verificationToken: text('verification_token'),
     verificationExpires: text('verification_expires'),
@@ -129,6 +133,9 @@ export const transactions = sqliteTable('transactions', {
     amountTenths: integer('amount_tenths'),
     balanceBeforeTenths: integer('balance_before_tenths'),
     balanceAfterTenths: integer('balance_after_tenths'),
+    checkpassBonusAmountTenths: integer('checkpass_bonus_amount_tenths').default(0).notNull(),
+    checkpassBonusBeforeTenths: integer('checkpass_bonus_before_tenths'),
+    checkpassBonusAfterTenths: integer('checkpass_bonus_after_tenths'),
     status: text('status', { enum: ['pending', 'completed', 'failed'] }).default('completed').notNull(),
     description: text('description'),
     reference: text('reference'),
@@ -160,6 +167,9 @@ export const deposits = sqliteTable('deposits', {
     reference: text('reference').notNull().unique(),
     transactionId: text('transaction_id'),
     bankId: integer('bank_id').references(() => paymentAccounts.id),
+    // Snapshotted when the deposit is created so later setting changes do not
+    // alter an already advertised promotion.
+    checkpassBonusTenths: integer('checkpass_bonus_tenths').default(0).notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),
     updatedAt: text('updated_at').$defaultFn(() => new Date().toISOString()),
 }, (table) => ({
@@ -335,7 +345,9 @@ export const balanceHolds = sqliteTable('balance_holds', {
     service: text('service').default('checkpass').notNull(),
     externalReference: text('external_reference').notNull().unique(),
     amountTenths: integer('amount_tenths').notNull(),
+    bonusAmountTenths: integer('bonus_amount_tenths').default(0).notNull(),
     capturedAmountTenths: integer('captured_amount_tenths').default(0).notNull(),
+    capturedBonusTenths: integer('captured_bonus_tenths').default(0).notNull(),
     status: text('status', { enum: ['active', 'captured', 'released', 'expired'] }).default('active').notNull(),
     expiresAt: text('expires_at').notNull(),
     createdAt: text('created_at').$defaultFn(() => new Date().toISOString()),

@@ -16,6 +16,7 @@ export async function migrateCheckpass(client: Client) {
         if (!users.rows.length) throw new Error('Database is not initialized');
 
         await addColumn(tx, 'users', 'balance_tenths', 'INTEGER');
+        await addColumn(tx, 'users', 'checkpass_bonus_tenths', 'INTEGER NOT NULL DEFAULT 0');
         await addColumn(tx, 'orders', 'subtotal_tenths', 'INTEGER');
         await addColumn(tx, 'orders', 'discount_tenths', 'INTEGER');
         await addColumn(tx, 'orders', 'total_tenths', 'INTEGER');
@@ -27,8 +28,13 @@ export async function migrateCheckpass(client: Client) {
         await addColumn(tx, 'transactions', 'amount_tenths', 'INTEGER');
         await addColumn(tx, 'transactions', 'balance_before_tenths', 'INTEGER');
         await addColumn(tx, 'transactions', 'balance_after_tenths', 'INTEGER');
+        await addColumn(tx, 'transactions', 'checkpass_bonus_amount_tenths', 'INTEGER NOT NULL DEFAULT 0');
+        await addColumn(tx, 'transactions', 'checkpass_bonus_before_tenths', 'INTEGER');
+        await addColumn(tx, 'transactions', 'checkpass_bonus_after_tenths', 'INTEGER');
+        await addColumn(tx, 'deposits', 'checkpass_bonus_tenths', 'INTEGER NOT NULL DEFAULT 0');
 
         await tx.execute('UPDATE users SET balance_tenths=ROUND(balance * 10) WHERE balance_tenths IS NULL');
+        await tx.execute('UPDATE users SET checkpass_bonus_tenths=0 WHERE checkpass_bonus_tenths IS NULL');
         await tx.execute('UPDATE orders SET subtotal_tenths=ROUND(subtotal * 10) WHERE subtotal_tenths IS NULL');
         await tx.execute('UPDATE orders SET discount_tenths=ROUND(COALESCE(discount,0) * 10) WHERE discount_tenths IS NULL');
         await tx.execute('UPDATE orders SET total_tenths=ROUND(total * 10) WHERE total_tenths IS NULL');
@@ -37,6 +43,8 @@ export async function migrateCheckpass(client: Client) {
         await tx.execute('UPDATE transactions SET amount_tenths=ROUND(amount * 10) WHERE amount_tenths IS NULL');
         await tx.execute('UPDATE transactions SET balance_before_tenths=ROUND(balance_before * 10) WHERE balance_before_tenths IS NULL');
         await tx.execute('UPDATE transactions SET balance_after_tenths=ROUND(balance_after * 10) WHERE balance_after_tenths IS NULL');
+        await tx.execute('UPDATE transactions SET checkpass_bonus_amount_tenths=0 WHERE checkpass_bonus_amount_tenths IS NULL');
+        await tx.execute('UPDATE deposits SET checkpass_bonus_tenths=0 WHERE checkpass_bonus_tenths IS NULL');
 
         await tx.execute(`CREATE TABLE IF NOT EXISTS checkpass_sso_tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +72,8 @@ export async function migrateCheckpass(client: Client) {
             updated_at TEXT
         )`);
         await tx.execute('CREATE INDEX IF NOT EXISTS idx_balance_holds_user_status ON balance_holds(user_id,status)');
+        await addColumn(tx, 'balance_holds', 'bonus_amount_tenths', 'INTEGER NOT NULL DEFAULT 0');
+        await addColumn(tx, 'balance_holds', 'captured_bonus_tenths', 'INTEGER NOT NULL DEFAULT 0');
 
         await tx.execute(`CREATE TABLE IF NOT EXISTS checkpass_entitlements (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -16,6 +16,11 @@ export function storedBalanceTenths(user: { balance: number; balanceTenths?: num
     return user.balanceTenths == null ? toTenths(Number(user.balance || 0)) : Number(user.balanceTenths);
 }
 
+export function storedCheckpassBonusTenths(user: { checkpassBonusTenths?: number | null }): number {
+    const value = Number(user.checkpassBonusTenths || 0);
+    return Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
 export const CHECKPASS_OK_PRICE_TENTHS = 3;
 export const CHECKPASS_FAIL_PRICE_TENTHS = 1;
 export const CHECKPASS_BLOCK_MINUTES = 30;

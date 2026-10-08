@@ -16,12 +16,13 @@ if (!process.env.AOVSHOP_SECURITY_TEST_DB?.startsWith('file:')) throw new Error(
 process.env.TURSO_DATABASE_URL = process.env.AOVSHOP_SECURITY_TEST_DB;
 delete process.env.TURSO_AUTH_TOKEN;
 process.env.JWT_SECRET = 'isolated-security-test-secret-not-for-production';
+process.env.CHECKPASS_SERVICE_TOKEN = 'isolated-checkpass-service-token';
 delete process.env.BREVO_API_KEY;
 delete process.env.BREVO_SENDER_EMAIL;
 delete process.env.LICENSE_SERVER_URL;
 const { db, client } = await import('../src/db/index.js');
 const schema = await import('../src/db/schema.js');
-const { users, products, productAccounts, orders, transactions, deposits, paymentAccounts, settings, promotions } = schema;
+const { users, products, productAccounts, orders, transactions, deposits, paymentAccounts, settings, promotions, balanceHolds } = schema;
 for (const table of Object.values(schema).filter(isTable)) {
     const config = getTableConfig(table as any);
     const columns = config.columns.map(c => `"${c.name}" ${c.getSQLType()}${c.primary ? ' PRIMARY KEY' : ''}${c.notNull ? ' NOT NULL' : ''}${c.isUnique ? ' UNIQUE' : ''}`);
@@ -32,6 +33,7 @@ app.use(express.json());
 app.use('/auth', (await import('../src/routes/auth.js')).default);
 app.use('/deposit', (await import('../src/routes/deposit.js')).default);
 app.use('/orders', (await import('../src/routes/orders.js')).default);
+app.use('/integrations/checkpass', (await import('../src/routes/checkpass.js')).checkpassIntegrationRouter);
 const server = app.listen(0, '127.0.0.1');
 await new Promise<void>(resolve => server.once('listening', resolve));
 const base = `http://127.0.0.1:${(server.address() as any).port}`;
@@ -61,6 +63,20 @@ async function webhook(payload: unknown, key = 'test-webhook-key') {
     const r = await fetch(base + '/deposit/webhook', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Apikey ${key}` }, body: JSON.stringify(payload) });
     return { status: r.status, body: await r.json() as any };
 }
+async function checkpassRequest(route: string, body?: unknown, method = body === undefined ? 'GET' : 'POST') {
+    const response = await fetch(base + '/integrations/checkpass' + route, {
+        method,
+        headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${process.env.CHECKPASS_SERVICE_TOKEN}`,
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() as any };
+}
+async function setSetting(key: string, value: string) {
+    await db.insert(settings).values({ key, value }).onConflictDoUpdate({ target: settings.key, set: { value } });
+}
 
 test('deposit history does not expose webhook secrets', async () => {
     const p = await payment();
@@ -88,6 +104,86 @@ test('valid webhook credits once, retry is idempotent and event cannot be reused
     const other = await payment();
     assert.equal((await webhook({ ...other.payload, id: p.payload.id })).status, 400);
     assert.equal((await db.query.users.findFirst({ where: eq(users.id, other.u.id) }))!.balance, 0);
+});
+test('deposit promotion is snapshotted and credits a Checkpass-only wallet exactly once', async () => {
+    await setSetting('minimum_deposit_amount', '10000');
+    await setSetting('checkpass_deposit_bonus_enabled', '1');
+    await setSetting('checkpass_deposit_bonus_minimum_amount', '50000');
+    await setSetting('checkpass_deposit_bonus_percent', '10');
+    const u = await user(0);
+    const [bank] = await db.insert(paymentAccounts).values({
+        bankName: 'MB', accountNumber: `promo-account-${++seq}`, accountName: 'Promo Test', secretKey: 'test-webhook-key',
+    }).returning();
+    const created = await request('/deposit/create', { amount: 100000 }, u.token);
+    assert.equal(created.status, 200);
+    assert.equal(created.body.checkpass_bonus_amount, 10000);
+    const payload = {
+        id: ++seq,
+        content: created.body.reference,
+        transferAmount: 100000,
+        transferType: 'in',
+        accountNumber: created.body.account_number,
+        gateway: 'MBBank',
+    };
+    assert.equal((await webhook(payload)).status, 200);
+    assert.equal((await webhook(payload)).status, 200);
+    const updated = await db.query.users.findFirst({ where: eq(users.id, u.id) });
+    assert.equal(updated!.balanceTenths, 1_000_000);
+    assert.equal(updated!.checkpassBonusTenths, 100_000);
+    const ledger = await db.query.transactions.findMany({ where: eq(transactions.userId, u.id) });
+    assert.equal(ledger.length, 1);
+    assert.equal(ledger[0].checkpassBonusAmountTenths, 100_000);
+    void bank;
+});
+test('regular products cannot spend Checkpass promotional credit', async () => {
+    const u = await user(0);
+    await db.update(users).set({ balanceTenths: 0, checkpassBonusTenths: 100_000 }).where(eq(users.id, u.id));
+    const p = await product({ price: 1000 });
+    const result = await request('/orders/checkout', { items: [{ product_id: p.id, quantity: 1 }] }, u.token);
+    assert.equal(result.status, 400);
+    const updated = await db.query.users.findFirst({ where: eq(users.id, u.id) });
+    assert.equal(updated!.checkpassBonusTenths, 100_000);
+});
+test('Checkpass products spend promotional credit before cash', async () => {
+    const u = await user(2000);
+    await db.update(users).set({ balanceTenths: 20_000, checkpassBonusTenths: 30_000 }).where(eq(users.id, u.id));
+    const p = await product({ price: 1, checkpassHours: 0.5 });
+    const result = await request('/orders/checkout', { items: [{ product_id: p.id, quantity: 1 }] }, u.token);
+    assert.equal(result.status, 200);
+    const updated = await db.query.users.findFirst({ where: eq(users.id, u.id) });
+    assert.equal(updated!.balanceTenths, 0);
+    assert.equal(updated!.checkpassBonusTenths, 0);
+    const ledger = (await db.query.transactions.findMany({ where: eq(transactions.userId, u.id) }))[0];
+    assert.equal(ledger.checkpassBonusAmountTenths, -30_000);
+});
+test('Checkpass quantity holds reserve and settle the promotional bucket safely', async () => {
+    const u = await user(0);
+    await db.update(users).set({ balanceTenths: 0, checkpassBonusTenths: 100 }).where(eq(users.id, u.id));
+    const reference = `cp_promo_${++seq}`;
+    const reserved = await checkpassRequest('/quantity/reserve', {
+        user_id: u.id,
+        external_job_reference: reference,
+        submitted_count: 20,
+        idempotency_key: `reserve:${reference}`,
+    });
+    assert.equal(reserved.status, 200);
+    assert.equal(reserved.body.available_checkpass_bonus_balance, 4);
+    const hold = await db.query.balanceHolds.findFirst({ where: eq(balanceHolds.externalReference, reference) });
+    assert.equal(hold!.bonusAmountTenths, 60);
+    const settled = await checkpassRequest('/quantity/settle', {
+        user_id: u.id,
+        external_job_reference: reference,
+        ok_count: 10,
+        fail_count: 0,
+        uncheckable_count: 10,
+        idempotency_key: `settle:${reference}`,
+    });
+    assert.equal(settled.status, 200);
+    const updated = await db.query.users.findFirst({ where: eq(users.id, u.id) });
+    assert.equal(updated!.balanceTenths, 0);
+    assert.equal(updated!.checkpassBonusTenths, 70);
+    const captured = await db.query.balanceHolds.findFirst({ where: eq(balanceHolds.externalReference, reference) });
+    assert.equal(captured!.capturedBonusTenths, 30);
 });
 test('expired and already completed deposits cannot be credited', async () => {
     for (const status of ['expired', 'completed'] as const) {

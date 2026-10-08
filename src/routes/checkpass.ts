@@ -12,7 +12,6 @@ import {
     orderItems,
     orders,
     paymentAccounts,
-    settings,
     transactions,
     users,
 } from '../db/schema.js';
@@ -26,7 +25,14 @@ import {
     CHECKPASS_VVIP_BLOCK_PRICE_TENTHS,
     fromTenths,
     storedBalanceTenths,
+    storedCheckpassBonusTenths,
 } from '../services/money.js';
+import {
+    calculateCheckpassDepositBonusTenths,
+    getDepositPromotionConfig,
+    MAXIMUM_DEPOSIT_AMOUNT,
+    publicDepositPromotionConfig,
+} from '../services/depositPromotion.js';
 
 const ticketLifetimeMs = 60_000;
 const holdLifetimeMs = 24 * 60 * 60 * 1000;
@@ -86,7 +92,10 @@ async function activeEntitlement(tx: any, userId: number, serviceTier: ServiceTi
 async function accountSnapshot(tx: any, userId: number) {
     const user = await tx.query.users.findFirst({ where: eq(users.id, userId) });
     if (!user) return null;
-    const held = await tx.select({ total: sql<number>`COALESCE(SUM(${balanceHolds.amountTenths}), 0)` })
+    const held = await tx.select({
+        total: sql<number>`COALESCE(SUM(${balanceHolds.amountTenths}), 0)`,
+        bonus: sql<number>`COALESCE(SUM(${balanceHolds.bonusAmountTenths}), 0)`,
+    })
         .from(balanceHolds)
         .where(and(
             eq(balanceHolds.userId, userId),
@@ -94,14 +103,24 @@ async function accountSnapshot(tx: any, userId: number) {
             gt(balanceHolds.expiresAt, new Date().toISOString()),
         ));
     const balanceTenths = storedBalanceTenths(user);
+    const bonusTenths = storedCheckpassBonusTenths(user);
     const heldTenths = Number(held[0]?.total || 0);
+    const heldBonusTenths = Number(held[0]?.bonus || 0);
+    const heldCashTenths = Math.max(0, heldTenths - heldBonusTenths);
+    const availableCashTenths = Math.max(0, balanceTenths - heldCashTenths);
+    const availableBonusTenths = Math.max(0, bonusTenths - heldBonusTenths);
     const entitlement = await activeEntitlement(tx, userId, 'normal');
     const vvipEntitlement = await activeEntitlement(tx, userId, 'vvip');
     return {
         user,
         balanceTenths,
+        bonusTenths,
         heldTenths,
-        availableTenths: Math.max(0, balanceTenths - heldTenths),
+        heldCashTenths,
+        heldBonusTenths,
+        availableCashTenths,
+        availableBonusTenths,
+        availableTenths: availableCashTenths + availableBonusTenths,
         entitlement,
         vvipEntitlement,
     };
@@ -128,9 +147,15 @@ function publicSnapshot(snapshot: NonNullable<Awaited<ReturnType<typeof accountS
             role: snapshot.user.role,
         },
         is_admin: isAdmin,
-        balance: fromTenths(snapshot.balanceTenths),
+        balance: fromTenths(snapshot.balanceTenths + snapshot.bonusTenths),
+        cash_balance: fromTenths(snapshot.balanceTenths),
+        checkpass_bonus_balance: fromTenths(snapshot.bonusTenths),
         held_balance: fromTenths(snapshot.heldTenths),
+        held_cash_balance: fromTenths(snapshot.heldCashTenths),
+        held_checkpass_bonus_balance: fromTenths(snapshot.heldBonusTenths),
         available_balance: fromTenths(snapshot.availableTenths),
+        available_cash_balance: fromTenths(snapshot.availableCashTenths),
+        available_checkpass_bonus_balance: fromTenths(snapshot.availableBonusTenths),
         entitlement: publicEntitlement(snapshot.entitlement),
         vvip_entitlement: publicEntitlement(snapshot.vvipEntitlement),
         entitlements: {
@@ -266,11 +291,13 @@ checkpassIntegrationRouter.post('/quantity/reserve', asyncRoute(async (req, res)
             if (!snapshot) throw new Error('USER_NOT_FOUND');
             const amountTenths = parsed.data.submitted_count * CHECKPASS_OK_PRICE_TENTHS;
             if (!Number.isSafeInteger(amountTenths) || snapshot.availableTenths < amountTenths) throw new Error('INSUFFICIENT_BALANCE');
+            const bonusAmountTenths = Math.min(amountTenths, snapshot.availableBonusTenths);
             const now = new Date();
             const [hold] = await tx.insert(balanceHolds).values({
                 userId: parsed.data.user_id,
                 externalReference: parsed.data.external_job_reference,
                 amountTenths,
+                bonusAmountTenths,
                 expiresAt: new Date(now.getTime() + holdLifetimeMs).toISOString(),
                 createdAt: now.toISOString(),
                 updatedAt: now.toISOString(),
@@ -336,17 +363,25 @@ checkpassIntegrationRouter.post('/quantity/settle', asyncRoute(async (req, res) 
             if (actualTenths > operation.estimatedAmountTenths) throw new Error('AMOUNT_EXCEEDS_HOLD');
             const user = await tx.query.users.findFirst({ where: eq(users.id, operation.userId) });
             if (!user) throw new Error('USER_NOT_FOUND');
+            const hold = await tx.query.balanceHolds.findFirst({ where: eq(balanceHolds.id, operation.holdId) });
+            if (!hold || hold.status !== 'active') throw new Error('INVALID_STATE');
             const beforeTenths = storedBalanceTenths(user);
-            if (beforeTenths < actualTenths) throw new Error('INSUFFICIENT_BALANCE');
-            const afterTenths = beforeTenths - actualTenths;
+            const bonusBeforeTenths = storedCheckpassBonusTenths(user);
+            const chargedBonusTenths = Math.min(actualTenths, Number(hold.bonusAmountTenths || 0));
+            const chargedCashTenths = actualTenths - chargedBonusTenths;
+            if (beforeTenths < chargedCashTenths || bonusBeforeTenths < chargedBonusTenths) throw new Error('INSUFFICIENT_BALANCE');
+            const afterTenths = beforeTenths - chargedCashTenths;
+            const bonusAfterTenths = bonusBeforeTenths - chargedBonusTenths;
             const now = new Date().toISOString();
             const charged = await tx.update(users).set({
                 balanceTenths: afterTenths,
                 balance: fromTenths(afterTenths),
+                checkpassBonusTenths: bonusAfterTenths,
                 updatedAt: now,
             }).where(and(
                 eq(users.id, operation.userId),
-                sql`COALESCE(${users.balanceTenths}, ROUND(${users.balance} * 10)) >= ${actualTenths}`,
+                sql`COALESCE(${users.balanceTenths}, ROUND(${users.balance} * 10)) >= ${chargedCashTenths}`,
+                sql`COALESCE(${users.checkpassBonusTenths}, 0) >= ${chargedBonusTenths}`,
             )).returning({ id: users.id });
             if (charged.length !== 1) throw new Error('INSUFFICIENT_BALANCE');
             const metadata = JSON.stringify({
@@ -360,6 +395,8 @@ checkpassIntegrationRouter.post('/quantity/settle', asyncRoute(async (req, res) 
                 unit_price: fromTenths(operation.unitPriceTenths),
                 ok_unit_price: fromTenths(operation.unitPriceTenths),
                 fail_unit_price: fromTenths(CHECKPASS_FAIL_PRICE_TENTHS),
+                cash_paid: fromTenths(chargedCashTenths),
+                checkpass_bonus_paid: fromTenths(chargedBonusTenths),
             });
             const [order] = await tx.insert(orders).values({
                 userId: operation.userId,
@@ -396,13 +433,19 @@ checkpassIntegrationRouter.post('/quantity/settle', asyncRoute(async (req, res) 
                 balanceAfter: fromTenths(afterTenths),
                 balanceBeforeTenths: beforeTenths,
                 balanceAfterTenths: afterTenths,
+                checkpassBonusAmountTenths: -chargedBonusTenths,
+                checkpassBonusBeforeTenths: bonusBeforeTenths,
+                checkpassBonusAfterTenths: bonusAfterTenths,
                 status: 'completed',
                 description: `Quyết toán Checkban #${parsed.data.master_job_id || operation.externalJobReference}`,
                 reference: operation.externalJobReference,
                 orderId: order.id,
             });
             await tx.update(balanceHolds).set({
-                status: 'captured', capturedAmountTenths: actualTenths, updatedAt: now,
+                status: 'captured',
+                capturedAmountTenths: actualTenths,
+                capturedBonusTenths: chargedBonusTenths,
+                updatedAt: now,
             }).where(eq(balanceHolds.id, operation.holdId));
             const [settled] = await tx.update(checkpassBillingOperations).set({
                 okCount: parsed.data.ok_count,
@@ -506,14 +549,21 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
             const snapshotBefore = await accountSnapshot(tx, parsed.data.user_id);
             if (!snapshotBefore || snapshotBefore.availableTenths < amountTenths) throw new Error('INSUFFICIENT_BALANCE');
             const beforeTenths = storedBalanceTenths(user);
-            const afterTenths = beforeTenths - amountTenths;
+            const bonusBeforeTenths = storedCheckpassBonusTenths(user);
+            const chargedBonusTenths = Math.min(amountTenths, snapshotBefore.availableBonusTenths);
+            const chargedCashTenths = amountTenths - chargedBonusTenths;
+            if (snapshotBefore.availableCashTenths < chargedCashTenths) throw new Error('INSUFFICIENT_BALANCE');
+            const afterTenths = beforeTenths - chargedCashTenths;
+            const bonusAfterTenths = bonusBeforeTenths - chargedBonusTenths;
             const charged = await tx.update(users).set({
                 balanceTenths: afterTenths,
                 balance: fromTenths(afterTenths),
+                checkpassBonusTenths: bonusAfterTenths,
                 updatedAt: now.toISOString(),
             }).where(and(
                 eq(users.id, user.id),
-                sql`COALESCE(${users.balanceTenths}, ROUND(${users.balance} * 10)) >= ${amountTenths}`,
+                sql`COALESCE(${users.balanceTenths}, ROUND(${users.balance} * 10)) >= ${chargedCashTenths}`,
+                sql`COALESCE(${users.checkpassBonusTenths}, 0) >= ${chargedBonusTenths}`,
             )).returning({ id: users.id });
             if (charged.length !== 1) throw new Error('INSUFFICIENT_BALANCE');
             const startsAt = current && parsed.data.extend ? new Date(current.expiresAt) : now;
@@ -527,6 +577,8 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
                 duration_minutes: parsed.data.block_count * CHECKPASS_BLOCK_MINUTES,
                 starts_at: startsAt.toISOString(),
                 expires_at: expiresAt.toISOString(),
+                cash_paid: fromTenths(chargedCashTenths),
+                checkpass_bonus_paid: fromTenths(chargedBonusTenths),
             });
             const [order] = await tx.insert(orders).values({
                 userId: user.id,
@@ -562,6 +614,9 @@ checkpassIntegrationRouter.post('/time/activate', asyncRoute(async (req, res) =>
                 userId: user.id, type: 'purchase', amount: -fromTenths(amountTenths), amountTenths: -amountTenths,
                 balanceBefore: fromTenths(beforeTenths), balanceAfter: fromTenths(afterTenths),
                 balanceBeforeTenths: beforeTenths, balanceAfterTenths: afterTenths,
+                checkpassBonusAmountTenths: -chargedBonusTenths,
+                checkpassBonusBeforeTenths: bonusBeforeTenths,
+                checkpassBonusAfterTenths: bonusAfterTenths,
                 status: 'completed', description: `Thuê Checkban${serviceTier === 'vvip' ? ' VVIP' : ''} ${entitlement.durationMinutes} phút`,
                 reference: parsed.data.external_job_reference, orderId: order.id,
             });
@@ -620,18 +675,9 @@ checkpassIntegrationRouter.get('/operations/:reference', asyncRoute(async (req, 
 }));
 
 // --- In-Checkpass Direct Deposit Endpoints ---
-const DEFAULT_MIN_DEPOSIT = 10000;
-const MAX_DEPOSIT = 1000000000;
-
-async function fetchMinDeposit(): Promise<number> {
-    const s = await db.query.settings.findFirst({ where: eq(settings.key, 'minimum_deposit_amount') });
-    const n = Number(s?.value);
-    return Number.isSafeInteger(n) && n > 0 && n <= MAX_DEPOSIT ? n : DEFAULT_MIN_DEPOSIT;
-}
-
 checkpassIntegrationRouter.get('/deposit/config', asyncRoute(async (req, res) => {
-    const min = await fetchMinDeposit();
-    res.json({ ok: true, minimum_deposit_amount: min });
+    const config = await getDepositPromotionConfig(db);
+    res.json({ ok: true, ...publicDepositPromotionConfig(config) });
 }));
 
 checkpassIntegrationRouter.post('/deposit/create', asyncRoute(async (req, res) => {
@@ -642,8 +688,9 @@ checkpassIntegrationRouter.post('/deposit/create', asyncRoute(async (req, res) =
     if (!parsed.success) return res.status(400).json({ ok: false, error: 'Dữ liệu nạp tiền không hợp lệ' });
 
     const { user_id: userId, amount } = parsed.data;
-    const min = await fetchMinDeposit();
-    if (amount < min || amount > MAX_DEPOSIT) {
+    const promotionConfig = await getDepositPromotionConfig(db);
+    const min = promotionConfig.minimumDepositAmount;
+    if (amount < min || amount > MAXIMUM_DEPOSIT_AMOUNT) {
         return res.status(400).json({
             ok: false,
             error: `Số tiền nạp tối thiểu là ${new Intl.NumberFormat('vi-VN').format(min)}đ`,
@@ -694,6 +741,7 @@ checkpassIntegrationRouter.post('/deposit/create', asyncRoute(async (req, res) =
         reference,
         bankId: selectedBank.id,
         status: 'pending',
+        checkpassBonusTenths: calculateCheckpassDepositBonusTenths(amount, promotionConfig),
     }).returning();
 
     const qrUrl = `https://img.vietqr.io/image/${selectedBank.bankName}-${selectedBank.accountNumber}-compact2.png?amount=${amount}&addInfo=${reference}&accountName=${encodeURIComponent(selectedBank.accountName)}`;
@@ -703,6 +751,7 @@ checkpassIntegrationRouter.post('/deposit/create', asyncRoute(async (req, res) =
         deposit_id: newDep.id,
         reference,
         amount,
+        checkpass_bonus_amount: fromTenths(newDep.checkpassBonusTenths),
         bank_name: selectedBank.bankName,
         account_number: selectedBank.accountNumber,
         account_name: selectedBank.accountName,
@@ -722,6 +771,7 @@ checkpassIntegrationRouter.get('/deposit/status/:reference', asyncRoute(async (r
         reference: dep.reference,
         status: dep.status,
         amount: dep.amount,
+        checkpass_bonus_amount: fromTenths(dep.checkpassBonusTenths),
         created_at: dep.createdAt,
         user_snapshot: userSnapshot ? publicSnapshot(userSnapshot) : null,
     });
