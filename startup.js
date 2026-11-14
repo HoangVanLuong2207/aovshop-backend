@@ -21,6 +21,9 @@ async function main() {
         console.log('Applying additive Checkpass billing migration...');
         execSync('npx tsx src/db/migrate-checkpass.ts', { stdio: 'inherit' });
 
+        console.log('Applying additive HOT integration migration...');
+        execSync('npx tsx src/db/migrate-hot.ts', { stdio: 'inherit' });
+
         // Run push notification migration (adds VAPID keys if missing)
         console.log('🔔 Checking push notification settings...');
         execSync('npx tsx src/db/migrate-push.ts', { stdio: 'inherit' });

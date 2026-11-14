@@ -14,7 +14,9 @@
         "db:migrate-google-auth": "tsx src/db/migrate-google-auth.ts",
         "test": "npm run build && node tests/run-security.mjs",
         "db:migrate-security": "tsx src/db/migrate-security.ts",
-        "db:migrate-checkpass": "tsx src/db/migrate-checkpass.ts"
+        "db:migrate-checkpass": "tsx src/db/migrate-checkpass.ts",
+        "db:migrate-hot": "tsx src/db/migrate-hot.ts",
+        "test:hot": "node tests/run-hot.mjs"
     },
     "dependencies": {
         "@libsql/client": "^0.14.0",

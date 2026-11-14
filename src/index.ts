@@ -11,6 +11,7 @@ import depositRoutes, { cleanupExpiredDeposits } from './routes/deposit.js';
 import adminRoutes from './routes/admin.js';
 import telegramRoutes from './routes/telegram.js';
 import { checkpassIntegrationRouter, userCheckpassRouter } from './routes/checkpass.js';
+import { hotIntegrationRouter, userHotRouter } from './routes/hot.js';
 import { TelegramService } from './services/telegram.js';
 import { client } from './db/index.js';
 import { migrateCheckpass } from './db/checkpassMigration.js';
@@ -150,6 +151,8 @@ app.use('/api/shop', shopRoutes); // Uses general limit (100 req/min)
 app.use('/api/orders', ordersLimiter, ordersRoutes); // 20 req/min - prevent order spam
 app.use('/api/checkpass', ordersLimiter, userCheckpassRouter);
 app.use('/api/integrations/checkpass', checkpassServiceLimiter, checkpassIntegrationRouter);
+app.use('/api/hot', ordersLimiter, userHotRouter);
+app.use('/api/integrations/hot', checkpassServiceLimiter, hotIntegrationRouter);
 
 // Special handling for deposit: webhook needs its own limiter (or no limiter), while other routes need depositLimiter
 app.use('/api/deposit/webhook', webhookLimiter); // Apply specific webhook limiter
